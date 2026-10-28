@@ -6,9 +6,13 @@ import (
 	"time"
 )
 
-// Vectors computed independently from the spec (Python hmac/hashlib).
+// Vectors computed independently from the spec (Python hmac/hashlib), then the shared vectors from
+// HommaRe's derivation (T from scrypt of the password, salted with the server id and name).
 func TestVectors(t *testing.T) {
 	for _, v := range []struct{ token, nonce, verifier, response string }{
+		{"Wgs4hXgot3GJCinm", "0123456789abcdef0123456789abcdef", "121e3493e77372e7a18d88f1f93c10ca5b0536820417c47fb06bee82360b5bd4", "~1:Mha-DE-4deymFMIO"},
+		{"aYUq3a-GMqcDMkz5", "ffeeddccbbaa99887766554433221100", "853736af49e9ca3336ea426c85d2551370ca585acd2f96a04d29fdf465e915c4", "~1:-Dy9MVAnJbvZxjty"},
+		{"kRAM7GjtYIrRc_V4", "aaaaaaaaaaaaaaaa", "7190e19fed5aa6a75d33273fb1c392828d8f87116e24e7735406a34f8b3d522e", "~1:KbL3cuvrkJisIY-5"},
 		{"abcdefghijklmnop", "00112233445566778899aabbccddeeff", "e5bf4c1473fb0e72609d6e9c3450b376a7ad6e348b43cc9d968c28411ca175ab", "~1:UJMaJUfHNeznWBx0"},
 		{"Zz09_-AbCdEfGhIj", "0123456789abcdef", "630d03c52b71a59b00dff9d6c9813ebff8fb4e20089ce7ac652cc20c95742bb9", "~1:4WLvq1o2gm5m91hX"},
 	} {

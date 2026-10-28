@@ -208,7 +208,7 @@ func (s *Server) handleSegment(data []byte, from netip.AddrPort, now time.Time) 
 	}
 	var out []Packet
 	switch {
-	case seg.Window != nil:
+	case seg.Window != nil && c != nil:
 		// connect (SYN)
 		out = append(out, Packet{c.srp.Respond(seg, nil), from})
 	case seg.Msg != nil && c != nil:
