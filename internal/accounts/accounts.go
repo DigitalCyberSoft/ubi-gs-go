@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -152,12 +153,46 @@ func setup(db *sql.DB, path string) error {
 			return err
 		}
 	}
-	// an addition the reference implementation ignores, so the schema version stays 1
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS lobby_logins (
+	// additions the reference implementation ignores, so the schema version stays 1
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS lobby_logins (
         account INTEGER PRIMARY KEY REFERENCES accounts(id),
         last INTEGER NOT NULL
-      )`)
-	return err
+      )`,
+		`CREATE TABLE IF NOT EXISTS server (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ServerID returns the server's identity, a random 128-bit value in hex, created on first use and kept
+// in the database (an in-memory database gets a new one per run).
+func (s *Store) ServerID() (string, error) {
+	var id string
+	err := s.tx(func(conn *sql.Conn) error {
+		ctx := context.Background()
+		err := conn.QueryRowContext(ctx, "SELECT value FROM server WHERE key = 'server_id'").Scan(&id)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return err
+		}
+		id = hex.EncodeToString(b)
+		_, err = conn.ExecContext(ctx, "INSERT INTO server (key, value) VALUES ('server_id', ?)", id)
+		return err
+	})
+	return id, err
 }
 
 var schemaV1 = []string{
