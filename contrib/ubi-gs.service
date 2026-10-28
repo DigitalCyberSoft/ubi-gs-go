@@ -4,7 +4,9 @@
 [Unit]
 Description=ubi-gs, the Ubi.com game services for Heroes of Might and Magic V
 Documentation=https://github.com/DigitalCyberSoft/ubi-gs-go
-After=network.target
+# A host name in UBIGS_HOST is looked up at start
+Wants=network-online.target
+After=network-online.target nss-lookup.target
 
 [Service]
 Type=exec
