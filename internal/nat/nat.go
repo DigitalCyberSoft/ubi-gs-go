@@ -39,10 +39,13 @@ type Relay interface {
 
 // Client is a game's NAT connection.
 type Client struct {
-	Addr     netip.AddrPort // the SRP connection
-	srp      srp.Conn
-	pingID   uint32
-	natReq   *gsm.Message
+	Addr   netip.AddrPort // the SRP connection
+	srp    srp.Conn
+	pingID uint32
+	natReq *gsm.Message
+	// pending is set while the request's address hasn't been sent: one ADDRESS per request, since the
+	// game leaves unasked-for ones in its receive buffer (536 bytes), which fills up and stalls the link
+	pending  bool
 	lastSeen time.Time
 	// Public is the address the game's last ping came from.
 	Public netip.AddrPort
@@ -164,12 +167,17 @@ func (s *Server) handlePing(data []byte, from netip.AddrPort, now time.Time) ([]
 	c.Public = from
 	told := from
 	if s.Relay != nil {
+		// every ping keeps the player's relay port
 		a, ok := s.Relay.Observed(from)
 		if !ok {
 			s.Log.Warnf("no relay port for %s", from)
 			return nil, nil
 		}
 		told = a
+	}
+	if !c.pending {
+		// already answered: a bare ACK keeps the connection alive (the game drops it after 120 s)
+		return []Packet{{c.srp.Ack(), c.Addr}}, nil
 	}
 	ip := told.Addr().Unmap()
 	if !ip.Is4() {
@@ -179,6 +187,7 @@ func (s *Server) handlePing(data []byte, from netip.AddrPort, now time.Time) ([]
 	if err != nil {
 		return nil, err
 	}
+	c.pending = false
 	return []Packet{{c.srp.Respond(nil, msg), c.Addr}}, nil
 }
 
@@ -217,6 +226,7 @@ func (s *Server) handleSegment(data []byte, from netip.AddrPort, now time.Time) 
 			return nil, errors.New("not a NAT message")
 		}
 		c.natReq = seg.Msg
+		c.pending = true
 		if c.pingID == 0 {
 			c.pingID = s.newPingID()
 		}

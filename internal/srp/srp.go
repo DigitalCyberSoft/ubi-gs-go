@@ -164,6 +164,15 @@ func (c *Conn) Respond(req *Segment, msg []byte) []byte {
 	return out
 }
 
+// Ack builds a bare acknowledgement of the last segment received, as the game sends its own: no data,
+// segment number 0xFFFF. It keeps the connection alive without adding to the game's receive buffer.
+func (c *Conn) Ack() []byte {
+	h := Header{Checksum: c.ChecksumInit, Signature: c.SenderSig, Flags: FlagID | FlagACK, Seg: 0xFFFF, Ack: c.LastSegment}
+	out := h.Bytes()
+	binary.LittleEndian.PutUint16(out, Checksum(out))
+	return out
+}
+
 // Checksum is the game's segment checksum (0x0047afe0), computed with the seed in the checksum field:
 // a 32-bit sum of the u16 words (an odd first byte added alone, sign-extended like the game's char),
 // folded to 16 bits and inverted.

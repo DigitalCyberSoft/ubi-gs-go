@@ -76,6 +76,20 @@ func TestPing(t *testing.T) {
 	if got := seg.Msg.Data.String(); got != "['3', ['1', '2130706433', '8888']]" {
 		t.Fatalf("address %s", got)
 	}
+	// later pings get a bare ACK: one address per request, or the game's receive buffer fills up
+	out, _ = s.HandlePacket(ping(id), gamePort, time.Unix(50, 0))
+	if len(out) != 1 || len(out[0].Data) != srp.HeaderSize {
+		t.Fatalf("second ping: %v", out)
+	}
+	h, _ := srp.ParseHeader(out[0].Data)
+	if h.Seg != 0xFFFF || h.DataSize != 0 || h.Flags != srp.FlagID|srp.FlagACK || h.Checksum != srp.Checksum(append([]byte{0xb7, 0x1a}, out[0].Data[2:]...)) {
+		t.Fatalf("ACK %+v", h)
+	}
+	// a new request gets its address on the next ping
+	s.HandlePacket(vec(t, "srp_msg"), game, time.Unix(60, 0))
+	if out, _ := s.HandlePacket(ping(id), gamePort, time.Unix(61, 0)); len(out) != 1 || len(out[0].Data) == srp.HeaderSize {
+		t.Fatal("no address for the second request")
+	}
 	if out, _ := s.HandlePacket(ping(id^1), gamePort, time.Unix(26, 0)); len(out) != 0 {
 		t.Fatal("unknown ping answered")
 	}
