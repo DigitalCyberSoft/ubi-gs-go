@@ -89,7 +89,7 @@ journalctl -u ubi-gs -f
   Environment=UBIGS_HOST=203.0.113.10
   ```
 - **Updating:** install the new binary the same way, then `sudo systemctl restart ubi-gs`.
-- **Moving a server:** once the service has started once, stop it, copy the old `ubigs.db` in, and give it the directory's owner. Without the `chown` the service can't open the file: it moves it aside as `ubigs.db.corrupt-*` and starts a new, empty database.
+- **Moving a server:** once the service has started once, stop it, copy the old `ubigs.db` in, and give it the directory's owner. Without the `chown` the service can't open the file, and stops with that error.
   ```
   sudo systemctl stop ubi-gs
   sudo cp ubigs.db /var/lib/ubi-gs/ubigs.db

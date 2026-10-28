@@ -2,7 +2,9 @@ package accounts
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -115,6 +117,58 @@ func TestPersistenceAndCorruptFile(t *testing.T) {
 	}
 	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) == 0 {
 		t.Fatal("not moved aside")
+	}
+}
+
+func TestUnopenableFileLeftAlone(t *testing.T) {
+	// a directory in the database's place can't be opened, by root too (unlike a file without permissions)
+	path := filepath.Join(t.TempDir(), "ubigs.db")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := Open(path, t.Logf); err == nil {
+		s.Close()
+		t.Fatal("opened")
+	}
+	if fi, err := os.Stat(path); err != nil || !fi.IsDir() {
+		t.Fatal("moved")
+	}
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 0 {
+		t.Fatal("moved aside")
+	}
+}
+
+func TestNewerSchemaLeftAlone(t *testing.T) {
+	s, path := open(t)
+	alice, _ := s.Login("alice", "one")
+	if _, err := s.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion+1)); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if s, err := Open(path, t.Logf); err == nil {
+		s.Close()
+		t.Fatal("opened a newer schema")
+	}
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 0 {
+		t.Fatal("moved aside")
+	}
+	// the accounts are all there once the version is set back
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(fmt.Sprintf("PRAGMA user_version = %d", SchemaVersion))
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path, t.Logf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if a, _ := s.Login("alice", "one"); a != alice {
+		t.Fatal("not kept")
 	}
 }
 
