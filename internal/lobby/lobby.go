@@ -46,10 +46,9 @@ type Results interface {
 
 // Match is a rated match: its room and the values each player submitted.
 type Match struct {
-	ID     int
-	Room   int
-	Game   string // the game id of the room (its title)
-	Ladder int    // the room's event id (game mode)
+	ID   int
+	Room int
+	Game string // the game id of the room (its title)
 	// Players are the room's players when the match started, by account name.
 	Players []string
 	// Accounts resolve the names the games use for the players (account and typed names).
@@ -348,28 +347,57 @@ func (l *Lobby) roomList(r *room, viewer *client) dl.Value {
 	switch {
 	case l.Relay != nil:
 		ip = Placeholder
-		c := *r.info
-		c.PlayerInfos = make([]*h5.PlayerInfo, len(r.info.PlayerInfos))
-		for i, p := range r.info.PlayerInfos {
-			c.PlayerInfos[i] = l.playerInfoFor(p, l.entryOwner(r, p), viewer, r.id)
-		}
-		c.HostIP.IP = [4]byte{}
+		info = l.relayView(r, r.info, viewer)
 		if master != nil && viewer != nil {
 			if master == viewer {
-				ip, c.HostIP = r.ip, r.info.HostIP
+				ip = r.ip
 			} else if a, ok := l.Relay.PeerAddr(master.IP, netip.AddrPortFrom(r.info.HostIP.Addr(), r.info.HostIP.Port), viewer.IP); ok {
 				ip = a.Addr().String()
-				c.HostIP.IP = a.Addr().As4()
-				c.HostIP.Port = a.Port()
 			}
 		}
-		info = &c
 	case inside || (master != nil && master == viewer):
 	default:
 		ip = Placeholder
 		info = r.info.WithoutAddresses()
 	}
 	return r.list(info.Serialize(), ip)
+}
+
+// relayView is a room info as the viewer sees it with the relay on: every player's addresses, the
+// host's included, are relay addresses (the viewer's own entry stays as it is).
+func (l *Lobby) relayView(r *room, src *h5.RoomInfo, viewer *client) *h5.RoomInfo {
+	c := *src
+	c.PlayerInfos = make([]*h5.PlayerInfo, len(src.PlayerInfos))
+	for i, p := range src.PlayerInfos {
+		c.PlayerInfos[i] = l.playerInfoFor(p, l.entryOwner(r, p), viewer, r.id)
+	}
+	c.HostIP.IP = [4]byte{}
+	master := l.master(r)
+	if master != nil && viewer != nil {
+		if master == viewer {
+			c.HostIP = src.HostIP
+		} else if a, ok := l.Relay.PeerAddr(master.IP, netip.AddrPortFrom(src.HostIP.Addr(), src.HostIP.Port), viewer.IP); ok {
+			c.HostIP.IP = a.Addr().As4()
+			c.HostIP.Port = a.Port()
+		}
+	}
+	return &c
+}
+
+// gameData is GAME_STARTED's data for a viewer: the host's room info, with relay addresses when the
+// relay is on (the game puts its own private address in it).
+func (l *Lobby) gameData(r *room, data dl.Value, viewer *client) dl.Value {
+	b, ok := data.Bin()
+	if l.Relay == nil || !ok || len(b) == 0 {
+		return data
+	}
+	info, err := h5.DeserializeRoomInfo(b)
+	if err != nil {
+		// not the structure we know: it can't be checked for addresses
+		l.Log.Warnf("GAME_READY data of room %d isn't a room info (%v); not passed on with the relay on", r.id, err)
+		return dl.B([]byte{})
+	}
+	return dl.B(l.relayView(r, info, viewer).Serialize())
 }
 
 // memberInfo is the subject's entry in a GROUP_INFO member list (`MemberJoined` struct).

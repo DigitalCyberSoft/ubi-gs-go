@@ -303,6 +303,7 @@ func TestDisputedResultNotRated(t *testing.T) {
 	// each claims the win
 	alice.lobby("30", dl.S("1"), dl.S("0"), dl.L(dl.S("alice"), dl.S("21"), dl.S("22"), dl.S("0"), values("1")))
 	bob.lobby("30", dl.S("1"), dl.S("0"), dl.L(dl.S("alice"), dl.S("21"), dl.S("22"), dl.S("0"), values("0")))
+	bob.msgs() // the reply: bob's submission is in
 	alice.lobby("45", dl.S("1000"))
 	alice.msgs()
 	a, _ := s.Accounts().Find("alice")
@@ -401,10 +402,26 @@ func TestRelayMode(t *testing.T) {
 			t.Fatalf("bob sees alice's address: %s", text)
 		}
 	}
-	alice.lobby("33", dl.S(room), dl.B(nil), dl.S("8888"), dl.S(""))
+	// the host's GAME_READY data is its room info, with its own private address in its entry
+	info, _ := h5.DeserializeRoomInfo(roomInfo(t))
+	info.HostIP = h5.SockAddr{Family: 2, Port: relayA.Port(), IP: relayA.Addr().As4()}
+	host, _ := h5.DeserializePlayerInfo(pi("alice", relayA))
+	host.LocalIP, host.LocalPort = [4]byte{127, 0, 0, 2}, 8888
+	info.PlayerInfos = []*h5.PlayerInfo{host}
+	alice.lobby("33", dl.S(room), dl.B(info.Serialize()), dl.S("8888"), dl.S(""))
 	started := notifs(bob.msgs(), "56")
-	if len(started) != 1 || started[0].String() != "['56', ['"+room+"', b'', '"+strconv.Itoa(int(relayA.Port()))+"', '127.0.0.1', '127.0.0.1']]" {
+	if len(started) != 1 {
 		t.Fatalf("GAME_STARTED in relay mode: %v", started)
+	}
+	args, _ := started[0].List(1)
+	if got := dl.List(args[2:]).String(); got != "['"+strconv.Itoa(int(relayA.Port()))+"', '127.0.0.1', '127.0.0.1']" {
+		t.Fatalf("GAME_STARTED address: %s", got)
+	}
+	data, _ := args.Bin(1)
+	seen, err := h5.DeserializeRoomInfo(data)
+	if err != nil || seen.PlayerInfos[0].LocalIP != relayA.Addr().As4() || seen.PlayerInfos[0].LocalPort != relayA.Port() ||
+		seen.HostIP.Addr() != relayA.Addr() || seen.HostIP.Port != relayA.Port() {
+		t.Fatalf("GAME_STARTED data shows real addresses: %+v %v", seen, err)
 	}
 	// traffic: bob -> alice's relay port arrives at alice from bob's relay port
 	toA := net.UDPAddrFromAddrPort(relayA)

@@ -220,7 +220,7 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 				if l.Relay != nil && m != c {
 					p = l.relayPort(c, m, port)
 				}
-				l.send(m, gsm.LobbyGameStarted, dl.List{dl.S(strconv.Itoa(id)), data, p, dl.S(ip), dl.S(alt)})
+				l.send(m, gsm.LobbyGameStarted, dl.List{dl.S(strconv.Itoa(id)), l.gameData(r, data, m), p, dl.S(ip), dl.S(alt)})
 			}
 		}, nil
 
@@ -235,7 +235,7 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		if r == nil {
 			return res, nil, nil
 		}
-		m := &Match{ID: l.nextMatchID, Room: id, Ladder: r.eventID, Values: map[string]dl.List{},
+		m := &Match{ID: l.nextMatchID, Room: id, Values: map[string]dl.List{},
 			Accounts: map[string]*accounts.Account{}, Disputed: map[string]bool{}, by: map[string]*client{}}
 		m.Game, _ = r.gameTitle.Str()
 		members := l.roomMembers(id)

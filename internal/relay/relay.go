@@ -59,6 +59,7 @@ type Relay struct {
 	routes  map[netip.Addr]netip.Addr
 	closed  bool
 	allowed map[[2]netip.Addr]time.Time // cache of Peers answers
+	warned  map[string]time.Time        // last log of a kind of drop
 	wg      sync.WaitGroup
 	totals  Stats
 }
@@ -99,7 +100,7 @@ func New(cfg Config, log *logx.Logger) (*Relay, error) {
 		cfg.MaxPerIP = 16
 	}
 	r := &Relay{cfg: cfg, Log: log, byReal: map[netip.AddrPort]*endpoint{}, byPort: map[uint16]*endpoint{},
-		next: cfg.PortMin, routes: map[netip.Addr]netip.Addr{}, allowed: map[[2]netip.Addr]time.Time{}}
+		next: cfg.PortMin, routes: map[netip.Addr]netip.Addr{}, allowed: map[[2]netip.Addr]time.Time{}, warned: map[string]time.Time{}}
 	if cfg.Host != "" {
 		if a, err := netip.ParseAddr(cfg.Host); err == nil && a.Unmap().Is4() {
 			r.hostIP = a.Unmap()
@@ -293,16 +294,20 @@ func (r *Relay) forward(dst *endpoint) {
 		}
 		r.mu.Unlock()
 		// only verified players of the same room or game, never arbitrary hosts
-		if !ok || !r.peers(from.Addr(), dst.real.Addr(), start) {
-			r.drop(dst)
+		if !ok {
+			r.drop(dst, from, "not a player's verified address")
+			continue
+		}
+		if !r.peers(from.Addr(), dst.real.Addr(), start) {
+			r.drop(dst, from, "not in the same room or game")
 			continue
 		}
 		if !r.take(dst, n, start) {
-			r.drop(dst)
+			r.drop(dst, from, "over the rate limit")
 			continue
 		}
 		if _, err := out.WriteToUDPAddrPort(buf[:n], dst.real); err != nil {
-			r.drop(dst)
+			r.drop(dst, from, err.Error())
 			continue
 		}
 		r.mu.Lock()
@@ -318,10 +323,20 @@ func (r *Relay) forward(dst *endpoint) {
 	}
 }
 
-func (r *Relay) drop(e *endpoint) {
+// drop counts a datagram not forwarded, and says why now and then.
+func (r *Relay) drop(e *endpoint, from netip.AddrPort, why string) {
 	r.mu.Lock()
 	e.stats.Dropped++
 	r.totals.Dropped++
+	now := time.Now()
+	key := from.String() + " " + why
+	last, seen := r.warned[key]
+	if !seen || now.Sub(last) > time.Minute {
+		r.warned[key] = now
+		r.mu.Unlock()
+		r.Log.Infof("dropped a datagram from %s to relay port %d: %s", from, e.port, why)
+		return
+	}
 	r.mu.Unlock()
 }
 
@@ -382,6 +397,11 @@ func (r *Relay) Expire(now time.Time) {
 	for k, until := range r.allowed {
 		if now.After(until) {
 			delete(r.allowed, k)
+		}
+	}
+	for k, t := range r.warned {
+		if now.Sub(t) > time.Minute {
+			delete(r.warned, k)
 		}
 	}
 }

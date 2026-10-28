@@ -84,14 +84,12 @@ func parse(l dl.List) ([]int64, bool) {
 	return out, true
 }
 
-// Key is the ladder a match counts for: the room's game and its game mode (1 Ranked, 2 1v1).
-func Key(m *lobby.Match) string {
-	id := m.Ladder
-	if id <= 0 {
-		id = 1
-	}
-	return proxy.LadderKey(m.Game, strconv.Itoa(id))
-}
+// LadderID is the ladder the game asks for in its ladder queries (in the Casual and Ranked channels
+// alike), so rated results go there.
+const LadderID = "1"
+
+// Key is the ladder a match counts for: the room's game, ladder 1.
+func Key(m *lobby.Match) string { return proxy.LadderKey(m.Game, LadderID) }
 
 // MatchFinished implements lobby.Results.
 func (l *Ladder) MatchFinished(m *lobby.Match) {
