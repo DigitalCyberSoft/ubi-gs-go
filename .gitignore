@@ -1,0 +1,7 @@
+/ubi-gs
+/ubi-gs.exe
+/dist/
+*.db
+*.db-wal
+*.db-shm
+*.corrupt-*
