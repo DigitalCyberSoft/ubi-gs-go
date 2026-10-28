@@ -16,6 +16,7 @@ import (
 
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/accounts"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/cdkey"
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/challenge"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/env"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/firewall"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsconnect"
@@ -87,6 +88,8 @@ type Server struct {
 	nat    *nat.Server
 	lobby  *lobby.Lobby
 	ports  []ports.Port
+	// listeners are every TCP listener opened, closed together
+	listeners []net.Listener
 	// serverID is the identity in servers.ini
 	serverID string
 	wg       sync.WaitGroup
@@ -182,12 +185,15 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 			return nil, &BindError{ports.Explain(port, host, lerr), lerr}
 		}
 		listeners[port.Service] = ln
+		s.listeners = append(s.listeners, ln)
 		if port.Service == "gsconnect" {
 			s.httpLn = ln
 		}
 	}
 
+	nonces := challenge.NewNonces()
 	g := guard.New(s.store, cfg.Guard)
+	g.Nonces = nonces
 	rt := router.New(e, log.With("router"), log.With("router_wm"), g)
 	px := &proxy.Proxy{Env: e, Log: log.With("proxy"), WMLog: log.With("proxy_wm")}
 	s.lobby = lobby.New(e, log.With("lobby"))
@@ -242,7 +248,7 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 
 	if s.httpLn != nil {
 		s.http = &http.Server{
-			Handler:           &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off, ServerID: serverID},
+			Handler:           &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off, ServerID: serverID, Nonces: nonces},
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
 			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 		}
@@ -319,8 +325,8 @@ func (s *Server) closeAll() {
 	} else if s.httpLn != nil {
 		s.httpLn.Close()
 	}
-	for _, t := range s.tcp {
-		t.ln.Close()
+	for _, ln := range s.listeners {
+		ln.Close()
 	}
 }
 
