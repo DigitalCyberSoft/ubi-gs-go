@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,6 +22,8 @@ import (
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/relay"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/server"
 )
+
+var serverIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
 // version is set at build time (-ldflags "-X main.version=...").
 var version = "dev"
@@ -155,6 +158,7 @@ func parse(args []string, stderr io.Writer) (*options, error) {
 	fs.IntVar(&c.Guard.LoginsPerIPMinute, "max-logins-per-ip-minute", ei("UBIGS_MAX_LOGINS_PER_IP_MINUTE", gd.LoginsPerIPMinute), "login attempts per address per minute; 0: no limit [UBIGS_MAX_LOGINS_PER_IP_MINUTE]")
 	fs.IntVar(&c.Guard.HashWorkers, "hash-workers", ei("UBIGS_HASH_WORKERS", 0), "password hashes at once; 0: the CPU count [UBIGS_HASH_WORKERS]")
 	fs.IntVar(&c.PruneDays, "prune-days", ei("UBIGS_PRUNE_DAYS", 0), "delete accounts that never reached the lobby after this many days; 0: never [UBIGS_PRUNE_DAYS]")
+	fs.StringVar(&c.ServerID, "server-id", env("UBIGS_SERVER_ID", ""), "the server's identity (32 hex digits) instead of the one in the database [UBIGS_SERVER_ID]")
 	noFW := fs.Bool("no-firewall-check", !eb("UBIGS_FIREWALL_CHECK", true), "skip the read-only firewall check at start [UBIGS_FIREWALL_CHECK=off]")
 	fs.BoolVar(&o.quiet, "quiet", eb("UBIGS_QUIET", false), "log warnings and errors only [UBIGS_QUIET]")
 	fs.BoolVar(&o.verbose, "verbose", eb("UBIGS_VERBOSE", false), "log every message (passwords and key data left out) [UBIGS_VERBOSE]")
@@ -186,6 +190,9 @@ func parse(args []string, stderr io.Writer) (*options, error) {
 	}
 	if c.MaxConns < 1 || c.MaxPerIP < 1 || c.MaxNATClients < 1 {
 		return nil, errors.New("connection limits must be at least 1")
+	}
+	if c.ServerID != "" && !serverIDPattern.MatchString(c.ServerID) {
+		return nil, fmt.Errorf("server id %q: expected 32 hex digits", c.ServerID)
 	}
 	if o.quiet && o.verbose {
 		return nil, errors.New("--quiet and --verbose don't go together")

@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -54,6 +55,9 @@ type Config struct {
 	RelayPacketsPerS float64
 	RelayBytesPerS   float64
 
+	// ServerID overrides the identity kept in the database (UBIGS_SERVER_ID).
+	ServerID string
+
 	Guard     guard.Config
 	PruneDays int
 
@@ -75,16 +79,18 @@ type Server struct {
 	log   *logx.Logger
 	store *accounts.Store
 
-	tcp     []*tcpService
-	udp     []*net.UDPConn
-	httpLn  net.Listener
-	http    *http.Server
-	relay   *relay.Relay
-	nat     *nat.Server
-	lobby   *lobby.Lobby
-	ports   []ports.Port
-	wg      sync.WaitGroup
-	started chan struct{}
+	tcp    []*tcpService
+	udp    []*net.UDPConn
+	httpLn net.Listener
+	http   *http.Server
+	relay  *relay.Relay
+	nat    *nat.Server
+	lobby  *lobby.Lobby
+	ports  []ports.Port
+	// serverID is the identity in servers.ini
+	serverID string
+	wg       sync.WaitGroup
+	started  chan struct{}
 }
 
 type tcpService struct {
@@ -114,11 +120,14 @@ func (c Config) Ports() []ports.Port {
 
 // Start opens the database and every port, and starts the services. A port that can't be opened is a
 // *BindError and nothing stays open.
-func Start(ctx context.Context, cfg Config, log *logx.Logger) (s *Server, err error) {
-	s = &Server{cfg: cfg, log: log, started: make(chan struct{})}
+func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err error) {
+	s := &Server{cfg: cfg, log: log}
 	defer func() {
 		if err != nil {
 			s.closeAll()
+			if s.store != nil {
+				s.store.Close()
+			}
 		}
 	}()
 	s.store, err = accounts.Open(cfg.DB, log.With("accounts").Warnf)
@@ -130,6 +139,15 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (s *Server, err er
 	} else {
 		log.Infof("accounts database: %s", cfg.DB)
 	}
+
+	serverID := strings.ToLower(cfg.ServerID)
+	if serverID == "" {
+		if serverID, err = s.store.ServerID(); err != nil {
+			return nil, fmt.Errorf("server id: %w", err)
+		}
+	}
+	s.serverID = serverID
+	log.Infof("server id: %s", serverID)
 
 	off := cfg.PortOffset
 	p := env.DefaultPorts()
@@ -224,7 +242,7 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (s *Server, err er
 
 	if s.httpLn != nil {
 		s.http = &http.Server{
-			Handler:           &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off},
+			Handler:           &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off, ServerID: serverID},
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
 			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 		}
@@ -283,6 +301,9 @@ func (s *Server) FirewallWarning() string {
 
 // Accounts returns the accounts store.
 func (s *Server) Accounts() *accounts.Store { return s.store }
+
+// ServerID returns the server's identity.
+func (s *Server) ServerID() string { return s.serverID }
 
 // Relay returns the relay, or nil.
 func (s *Server) Relay() *relay.Relay { return s.relay }

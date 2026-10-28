@@ -38,12 +38,18 @@ type Handler struct {
 	Host string
 	// PortOffset moves the services' ports.
 	PortOffset int
+	// ServerID is added to servers.ini as ServerID=<hex>: HommaRe derives its login token from it.
+	ServerID string
 }
 
 // ServersINI returns servers.ini with every *IP<n> line set to host (unless empty) and every
 // *Port<n> line moved by offset.
-func ServersINI(host string, offset int) string {
+func ServersINI(host string, offset int, serverID string) string {
 	ini := serversINI
+	if serverID != "" {
+		// the file has the [Servers] section only, so the key goes at its end
+		ini = strings.TrimRight(ini, "\r\n") + "\nServerID=" + serverID + "\n"
+	}
 	if host != "" {
 		ini = ipLine.ReplaceAllString(ini, "${1}="+host)
 	}
@@ -86,7 +92,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case heroesID.MatchString(dp[0]):
 		// Heroes V and its expansions; the services' address is where this request arrived
-		file, body = "servers.ini", ServersINI(h.host(r), h.PortOffset)
+		file, body = "servers.ini", ServersINI(h.host(r), h.PortOffset, h.ServerID)
 	case splinterCell[dp[0]]:
 		file, body = "GS.ini", splinterCellINI
 	default:
