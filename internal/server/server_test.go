@@ -16,6 +16,7 @@ import (
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/dl"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/env"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsclient"
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsconnect"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsm"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/logx"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/ports"
@@ -185,5 +186,22 @@ func TestLoginChallengeThroughGSConnect(t *testing.T) {
 	// plain logins are unchanged
 	if res := routerLogin(t, s, "bob", "secret"); res.Header.Type != gsm.GSSUCCESS {
 		t.Fatalf("plain: %s", res)
+	}
+}
+
+func TestHTTPRoutes(t *testing.T) {
+	s := testserver.Start(t, func(c *server.Config) {
+		c.HTTPRoutes = func(mux *http.ServeMux, gs *gsconnect.Handler) {
+			mux.HandleFunc("/rtc", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "signaling") })
+		}
+	})
+	res, err := http.Get("http://" + s.GSConnect() + "/rtc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if string(b) != "signaling" || !strings.Contains(ini(t, s), "RouterPort0=") {
+		t.Fatalf("extra route %q", b)
 	}
 }

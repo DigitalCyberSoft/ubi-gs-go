@@ -80,3 +80,11 @@ func TestProxyStyleRequest(t *testing.T) {
 		t.Fatalf("%q", b)
 	}
 }
+
+func TestHeadersHook(t *testing.T) {
+	h := &Handler{Log: logx.Discard(), Headers: func(hd http.Header, r *http.Request) { hd.Set("Access-Control-Allow-Origin", "*") }}
+	_, _, hdr := get(t, h, "/gsinit.php?dp=HEROES_657d2c2ebadc6a1d")
+	if hdr.Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatal("hook not applied")
+	}
+}

@@ -43,6 +43,8 @@ type Handler struct {
 	ServerID string
 	// Nonces issue the LoginNonce=<hex> of each reply (HommaRe's login challenge); nil: none.
 	Nonces *challenge.Nonces
+	// Headers, if set, adds headers to every reply (e.g. CORS for a browser client).
+	Headers func(h http.Header, r *http.Request)
 }
 
 // ServersINI returns servers.ini with every *IP<n> line set to host (unless empty) and every
@@ -70,6 +72,9 @@ func ServersINI(host string, offset int, extra ...string) string {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.Headers != nil {
+		h.Headers(w.Header(), r)
+	}
 	h.Log.Infof("%s %s %s", netsrv.HostIP(remoteAddr(r)), r.Method, r.URL.RequestURI())
 	// one path segment, as the reference's /<php_filename> route
 	name := strings.TrimPrefix(r.URL.Path, "/")

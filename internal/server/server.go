@@ -63,6 +63,10 @@ type Config struct {
 	PruneDays int
 
 	FirewallCheck bool
+
+	// HTTPRoutes, if set, adds routes to gsconnect's HTTP server (e.g. a signaling endpoint). The
+	// mux already routes everything else to gsinit.php; more specific patterns win.
+	HTTPRoutes func(mux *http.ServeMux, gs *gsconnect.Handler)
 }
 
 // BindError is a port that couldn't be opened, with its one-line explanation.
@@ -247,8 +251,14 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 	log.Infof("NAT is listening on UDP port %d", e.Ports.NAT)
 
 	if s.httpLn != nil {
+		gs := &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off, ServerID: serverID, Nonces: nonces}
+		mux := http.NewServeMux()
+		mux.Handle("/", gs)
+		if cfg.HTTPRoutes != nil {
+			cfg.HTTPRoutes(mux, gs)
+		}
 		s.http = &http.Server{
-			Handler:           &gsconnect.Handler{Log: log.With("gsconnect"), Host: cfg.Host, PortOffset: off, ServerID: serverID, Nonces: nonces},
+			Handler:           mux,
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
 			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 		}
