@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/challenge"
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/dl"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/env"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsclient"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/gsm"
@@ -141,4 +143,47 @@ func TestBindError(t *testing.T) {
 		t.Fatalf("router port left open: %v", err)
 	}
 	l2.Close()
+}
+
+func routerLogin(t *testing.T, s *testserver.Server, name, password string) *gsm.Message {
+	c, err := gsclient.New("", s.Addr(env.PortRouter), gsm.PartyRouter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.KeyExchange(); err != nil {
+		t.Fatal(err)
+	}
+	c.SendEncrypted(gsm.LOGIN, dl.S(name), dl.S(password), dl.S("HEROES_657d2c2ebadc6a1d"))
+	res, err := c.Recv(5 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
+
+func TestLoginChallengeThroughGSConnect(t *testing.T) {
+	s := testserver.Start(t, nil)
+	const token = "abcdefghijklmnop"
+	if res := routerLogin(t, s, "alice", challenge.RegisterPrefix+token); res.Header.Type != gsm.GSSUCCESS {
+		t.Fatalf("registration: %s", res)
+	}
+	text := ini(t, s)
+	_, after, ok := strings.Cut(text, "\nLoginNonce=")
+	nonce, _, _ := strings.Cut(after, "\n")
+	if !ok || len(nonce) != 32 {
+		t.Fatalf("no nonce in %q", text)
+	}
+	resp := challenge.Response(challenge.Verifier(token), nonce)
+	if res := routerLogin(t, s, "alice", resp); res.Header.Type != gsm.GSSUCCESS {
+		t.Fatalf("challenge login: %s", res)
+	}
+	res := routerLogin(t, s, "alice", resp)
+	if reason, _ := res.Data.List(1); res.Header.Type != gsm.GSFAIL || reason.String() != "[b'\\x0f\\x00\\x00\\x00']" {
+		t.Fatalf("replay: %s", res)
+	}
+	// plain logins are unchanged
+	if res := routerLogin(t, s, "bob", "secret"); res.Header.Type != gsm.GSSUCCESS {
+		t.Fatalf("plain: %s", res)
+	}
 }

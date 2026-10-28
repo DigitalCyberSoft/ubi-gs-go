@@ -4,6 +4,10 @@
 package guard
 
 import (
+	"errors"
+	"strings"
+
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/challenge"
 	"runtime"
 	"sync"
 	"time"
@@ -42,9 +46,11 @@ func Defaults() Config {
 // Guard applies the limits.
 type Guard struct {
 	Accounts *accounts.Store
-	cfg      Config
-	now      func() time.Time
-	sem      chan struct{}
+	// Nonces are the login challenges issued with servers.ini; nil refuses challenge logins.
+	Nonces *challenge.Nonces
+	cfg    Config
+	now    func() time.Time
+	sem    chan struct{}
 
 	mu     sync.Mutex
 	ips    map[string]*ipState
@@ -106,8 +112,79 @@ func (g *Guard) state(ip string, now time.Time) *ipState {
 	return st
 }
 
-// Login logs in with the limits applied.
+// Login logs in with the limits applied. The password may be plain, or a HommaRe registration or
+// challenge response (package challenge).
 func (g *Guard) Login(ip, name, password string) (accounts.Account, error) {
+	switch challenge.Kind(password) {
+	case "register":
+		token := strings.TrimPrefix(password, challenge.RegisterPrefix)
+		if token == "" {
+			return accounts.Account{}, accounts.ErrPasswordMalformed
+		}
+		return g.login(ip, name, token, challenge.Verifier(token))
+	case "challenge":
+		return g.challenge(ip, name, password)
+	}
+	return g.login(ip, name, password, nil)
+}
+
+// challenge checks a response to a nonce issued to the address; the nonce is used up.
+func (g *Guard) challenge(ip, name, password string) (accounts.Account, error) {
+	now := g.now()
+	g.mu.Lock()
+	st := g.state(ip, now)
+	if now.Before(st.until) || (g.cfg.LoginsPerIPMinute > 0 && len(st.attempts) >= g.cfg.LoginsPerIPMinute) {
+		g.mu.Unlock()
+		return accounts.Account{}, ErrSlowDown
+	}
+	st.attempts = append(st.attempts, now)
+	g.mu.Unlock()
+	family, err := g.Accounts.FamilyVerifiers(name)
+	if err != nil {
+		var le *accounts.LoginError
+		if errors.As(err, &le) {
+			return accounts.Account{}, le
+		}
+		return accounts.Account{}, accounts.ErrDatabaseFailed
+	}
+	var found *accounts.Account
+	if g.Nonces != nil {
+		// on a miss every outstanding nonce of the address is used up: no guessing across nonces
+		g.Nonces.Redeem(ip, func(nonce string) bool {
+			for _, t := range family {
+				if challenge.Check(t.Verifier, nonce, password) {
+					a := t.Account
+					found = &a
+					return true
+				}
+			}
+			return false
+		})
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st = g.state(ip, g.now())
+	if found == nil {
+		g.miss(st)
+		return accounts.Account{}, accounts.ErrInvalidPassword
+	}
+	st.misses = 0
+	return *found, nil
+}
+
+// miss counts a password miss and sets the back-off. g.mu is held.
+func (g *Guard) miss(st *ipState) {
+	st.misses++
+	backoff := time.Second << min(st.misses-1, 20)
+	if g.cfg.MaxBackoff > 0 && backoff > g.cfg.MaxBackoff {
+		backoff = g.cfg.MaxBackoff
+	}
+	if st.misses > 1 {
+		st.until = g.now().Add(backoff)
+	}
+}
+
+func (g *Guard) login(ip, name, password string, verifier []byte) (accounts.Account, error) {
 	if g == nil {
 		return accounts.Account{}, accounts.ErrDatabaseFailed
 	}
@@ -122,7 +199,8 @@ func (g *Guard) Login(ip, name, password string) (accounts.Account, error) {
 	g.mu.Unlock()
 
 	res, err := g.Accounts.LoginWith(name, password, accounts.LoginOptions{
-		Hash: g.hash,
+		Hash:     g.hash,
+		Verifier: verifier,
 		AllowCreate: func(stored int64) error {
 			if g.cfg.MaxAccounts > 0 && stored >= g.cfg.MaxAccounts {
 				return ErrTooManyAccounts
@@ -145,14 +223,7 @@ func (g *Guard) Login(ip, name, password string) (accounts.Account, error) {
 	case err != nil:
 	case res.Taken:
 		// the name's own password didn't match: a new player picking a taken name, or a guess
-		st.misses++
-		backoff := time.Second << min(st.misses-1, 20)
-		if g.cfg.MaxBackoff > 0 && backoff > g.cfg.MaxBackoff {
-			backoff = g.cfg.MaxBackoff
-		}
-		if st.misses > 1 {
-			st.until = g.now().Add(backoff)
-		}
+		g.miss(st)
 	default:
 		st.misses = 0
 	}

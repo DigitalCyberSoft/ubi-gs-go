@@ -159,6 +159,10 @@ func setup(db *sql.DB, path string) error {
         account INTEGER PRIMARY KEY REFERENCES accounts(id),
         last INTEGER NOT NULL
       )`,
+		`CREATE TABLE IF NOT EXISTS verifiers (
+        account INTEGER PRIMARY KEY REFERENCES accounts(id),
+        verifier BLOB NOT NULL
+      )`,
 		`CREATE TABLE IF NOT EXISTS server (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -348,16 +352,19 @@ func hashPassword(password string, salt []byte) ([]byte, error) {
 }
 
 type row struct {
-	id   int64
-	name string
-	hash []byte
-	salt []byte
+	id    int64
+	name  string
+	hash  []byte
+	salt  []byte
+	token bool // a token account (HommaRe's login challenge)
 }
+
+const rowQuery = `SELECT accounts.id, accounts.name, accounts.hash, accounts.salt, verifiers.account IS NOT NULL
+  FROM accounts LEFT JOIN verifiers ON verifiers.account = accounts.id WHERE accounts.name = ?`
 
 func getRow(conn *sql.Conn, name string) (*row, error) {
 	r := &row{}
-	err := conn.QueryRowContext(context.Background(), "SELECT id, name, hash, salt FROM accounts WHERE name = ?", name).
-		Scan(&r.id, &r.name, &r.hash, &r.salt)
+	err := conn.QueryRowContext(context.Background(), rowQuery, name).Scan(&r.id, &r.name, &r.hash, &r.salt, &r.token)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -382,6 +389,10 @@ type LoginOptions struct {
 	AllowCreate func(stored int64) error
 	// Hash runs a password hash; it bounds how many run at once. Nil runs it directly.
 	Hash func(fn func())
+	// Verifier, if set, makes this a token login (HommaRe's registration): only token accounts match,
+	// and a new account is a token account with this verifier. Without it only plain accounts match.
+	// The two kinds never convert: a name of the other kind is a collision (name-k).
+	Verifier []byte
 }
 
 // LoginResult is the outcome of a login.
@@ -435,12 +446,19 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 		if r == nil {
 			break
 		}
-		hash, err := opt.hash(password, r.salt)
-		if err != nil {
-			return fail(err)
-		}
-		if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
-			return LoginResult{Account: Account{r.id, r.name}}, nil
+		if r.token == (opt.Verifier != nil) {
+			hash, err := opt.hash(password, r.salt)
+			if err != nil {
+				return fail(err)
+			}
+			if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
+				if opt.Verifier != nil {
+					if err := s.SetVerifier(Account{r.id, r.name}, opt.Verifier); err != nil {
+						return fail(err)
+					}
+				}
+				return LoginResult{Account: Account{r.id, r.name}}, nil
+			}
 		}
 		candidate = FamilyName(name, k)
 	}
@@ -464,13 +482,15 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 			if r == nil {
 				break
 			}
-			hash, err := hashPassword(password, r.salt)
-			if err != nil {
-				return err
-			}
-			if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
-				res = LoginResult{Account: Account{r.id, r.name}}
-				return nil
+			if r.token == (opt.Verifier != nil) {
+				hash, err := hashPassword(password, r.salt)
+				if err != nil {
+					return err
+				}
+				if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
+					res = LoginResult{Account: Account{r.id, r.name}}
+					return nil
+				}
 			}
 			candidate = FamilyName(name, k)
 			taken = true
@@ -493,6 +513,12 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 		if err != nil {
 			return err
 		}
+		if opt.Verifier != nil {
+			if _, err := conn.ExecContext(context.Background(),
+				"INSERT INTO verifiers (account, verifier) VALUES (?, ?)", id, opt.Verifier); err != nil {
+				return err
+			}
+		}
 		res = LoginResult{Account: Account{id, candidate}, Created: true, Taken: taken}
 		return nil
 	})
@@ -506,7 +532,7 @@ func (s *Store) lookup(name string) (*row, error) {
 	var out *row
 	err := s.query(func(db *sql.DB) error {
 		r := &row{}
-		err := db.QueryRow("SELECT id, name, hash, salt FROM accounts WHERE name = ?", name).Scan(&r.id, &r.name, &r.hash, &r.salt)
+		err := db.QueryRow(rowQuery, name).Scan(&r.id, &r.name, &r.hash, &r.salt, &r.token)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -535,7 +561,7 @@ func (s *Store) PruneUnused(cutoff time.Time) (int64, error) {
 	err := s.tx(func(conn *sql.Conn) error {
 		ctx := context.Background()
 		where := "SELECT id FROM accounts WHERE created < ? AND id NOT IN (SELECT account FROM lobby_logins)"
-		for _, table := range []string{"sessions", "ladder", "profiles"} {
+		for _, table := range []string{"sessions", "ladder", "profiles", "verifiers"} {
 			if _, err := conn.ExecContext(ctx, "DELETE FROM "+table+" WHERE account IN ("+where+")", cutoff.Unix()); err != nil {
 				return err
 			}
@@ -552,6 +578,51 @@ func (s *Store) PruneUnused(cutoff time.Time) (int64, error) {
 		return err
 	})
 	return n, err
+}
+
+// SetVerifier makes the account a token account with the challenge verifier.
+func (s *Store) SetVerifier(account Account, verifier []byte) error {
+	return s.tx(func(conn *sql.Conn) error {
+		_, err := conn.ExecContext(context.Background(),
+			"INSERT OR REPLACE INTO verifiers (account, verifier) VALUES (?, ?)", account.ID, verifier)
+		return err
+	})
+}
+
+// TokenAccount is an account with its challenge verifier.
+type TokenAccount struct {
+	Account
+	Verifier []byte
+}
+
+// FamilyVerifiers returns the token accounts of a typed name's family (name, name-1, ...), in order.
+func (s *Store) FamilyVerifiers(name string) ([]TokenAccount, error) {
+	name = Cut(strings.TrimSpace(name), NameSize)
+	if !ValidName(name) {
+		return nil, ErrUsernameMalformed
+	}
+	var out []TokenAccount
+	err := s.query(func(db *sql.DB) error {
+		candidate := name
+		for k := 1; ; k++ {
+			var t TokenAccount
+			var v []byte
+			err := db.QueryRow(`SELECT accounts.id, accounts.name, verifiers.verifier FROM accounts
+        LEFT JOIN verifiers ON verifiers.account = accounts.id WHERE accounts.name = ?`, candidate).Scan(&t.ID, &t.Name, &v)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if v != nil {
+				t.Verifier = v
+				out = append(out, t)
+			}
+			candidate = FamilyName(name, k)
+		}
+	})
+	return out, err
 }
 
 // Count returns the number of stored accounts.

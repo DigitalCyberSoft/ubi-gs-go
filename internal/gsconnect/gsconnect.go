@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/challenge"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/logx"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/netsrv"
 )
@@ -40,15 +41,17 @@ type Handler struct {
 	PortOffset int
 	// ServerID is added to servers.ini as ServerID=<hex>: HommaRe derives its login token from it.
 	ServerID string
+	// Nonces issue the LoginNonce=<hex> of each reply (HommaRe's login challenge); nil: none.
+	Nonces *challenge.Nonces
 }
 
 // ServersINI returns servers.ini with every *IP<n> line set to host (unless empty) and every
 // *Port<n> line moved by offset.
-func ServersINI(host string, offset int, serverID string) string {
+func ServersINI(host string, offset int, extra ...string) string {
 	ini := serversINI
-	if serverID != "" {
-		// the file has the [Servers] section only, so the key goes at its end
-		ini = strings.TrimRight(ini, "\r\n") + "\nServerID=" + serverID + "\n"
+	if len(extra) > 0 {
+		// the file has the [Servers] section only, so the keys go at its end
+		ini = strings.TrimRight(ini, "\r\n") + "\n" + strings.Join(extra, "\n") + "\n"
 	}
 	if host != "" {
 		ini = ipLine.ReplaceAllString(ini, "${1}="+host)
@@ -92,7 +95,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case heroesID.MatchString(dp[0]):
 		// Heroes V and its expansions; the services' address is where this request arrived
-		file, body = "servers.ini", ServersINI(h.host(r), h.PortOffset, h.ServerID)
+		var extra []string
+		if h.ServerID != "" {
+			extra = append(extra, "ServerID="+h.ServerID)
+		}
+		if h.Nonces != nil {
+			extra = append(extra, "LoginNonce="+h.Nonces.Issue(netsrv.HostIP(remoteAddr(r))))
+		}
+		file, body = "servers.ini", ServersINI(h.host(r), h.PortOffset, extra...)
 	case splinterCell[dp[0]]:
 		file, body = "GS.ini", splinterCellINI
 	default:
