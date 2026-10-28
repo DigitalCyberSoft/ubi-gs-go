@@ -24,7 +24,7 @@ The services share their state in memory (accounts, lobby rooms and members, NAT
 Download the binary for your system from the releases, or build it. Building needs Go 1.25 or newer and no C compiler:
 
 ```
-git clone <this repository> ubi-gs-go
+git clone https://github.com/DigitalCyberSoft/ubi-gs-go
 cd ubi-gs-go
 make                 # ./ubi-gs for this system
 make all             # dist/ubi-gs-<os>-<arch> for linux/amd64, linux/arm64, windows/amd64, darwin/arm64, darwin/amd64
