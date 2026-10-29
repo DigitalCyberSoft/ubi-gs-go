@@ -3,6 +3,7 @@
 package irc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -190,10 +191,14 @@ func (s *Server) Serve(conn *netsrv.Conn) {
 					continue
 				}
 				pending = append(pending, payload...)
-				lines := lineSep.Split(string(pending), -1)
-				pending = []byte(lines[len(lines)-1])
-				for _, line := range lines[:len(lines)-1] {
-					s.handleLine(c, line)
+				// only a newline in this payload can end a line: splitting the whole buffer for
+				// every frame let a stream of tiny frames rescan up to 64 KB each
+				if bytes.IndexByte(payload, '\n') >= 0 {
+					lines := lineSep.Split(string(pending), -1)
+					pending = []byte(lines[len(lines)-1])
+					for _, line := range lines[:len(lines)-1] {
+						s.handleLine(c, line)
+					}
 				}
 				if len(pending) > 0xFFFF {
 					s.Log.Warnf("closing %s: line too long", c.ident())
