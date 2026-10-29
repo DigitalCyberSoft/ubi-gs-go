@@ -2,6 +2,7 @@ package lobby
 
 import (
 	"strconv"
+	"time"
 
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/dl"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/h5"
@@ -60,6 +61,8 @@ type room struct {
 	info    *h5.RoomInfo
 	// matchID is the rated match being played, 0 for none
 	matchID int
+	// left are the names of the players who left the room lately (the host announces them), and when
+	left map[string]time.Time
 }
 
 // list is the room's group data (`RoomInfo` struct) with the given group info and address.

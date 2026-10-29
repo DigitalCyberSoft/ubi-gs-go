@@ -43,7 +43,9 @@ type Config struct {
 	MaxConns      int
 	MaxPerIP      int
 	MaxNATClients int
-	PortOffset    int
+	// MaxRooms is the most lobby rooms open at once; 0: lobby.DefaultMaxRooms.
+	MaxRooms   int
+	PortOffset int
 
 	GSConnect     bool
 	GSConnectBind string
@@ -202,9 +204,13 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 	px := &proxy.Proxy{Env: e, Log: log.With("proxy"), WMLog: log.With("proxy_wm")}
 	s.lobby = lobby.New(e, log.With("lobby"))
 	s.lobby.Results = &ratings.Ladder{Accounts: s.store, Log: log.With("ratings")}
+	if cfg.MaxRooms > 0 {
+		s.lobby.MaxRooms = cfg.MaxRooms
+	}
 	rt.LobbyMembers, rt.MaxLobbyMembers = s.lobby.Members, cfg.MaxConns
 	chat := irc.New(log.With("irc"), cfg.SocketTimeout)
 	chat.Allowed = rt.LoggedIn
+	chat.Announces = s.lobby.Announces
 	s.nat = &nat.Server{Log: log.With("nat"), Port: e.Ports.NAT, MaxClients: cfg.MaxNATClients, MaxPerIP: cfg.MaxPerIP}
 
 	if cfg.Relay {
@@ -358,6 +364,9 @@ func (s *Server) ServerID() string { return s.serverID }
 
 // Relay returns the relay, or nil.
 func (s *Server) Relay() *relay.Relay { return s.relay }
+
+// Lobby is the lobby service.
+func (s *Server) Lobby() *lobby.Lobby { return s.lobby }
 
 func (s *Server) closeAll() {
 	for _, c := range s.udp {

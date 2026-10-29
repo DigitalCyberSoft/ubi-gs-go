@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,8 +31,9 @@ const MemberNameSize = 36
 // FirstRoomID is the id of the first room created.
 const FirstRoomID = 1000
 
-// MaxRooms caps the rooms open at once; a room holds up to a message's worth of its creator's data.
-const MaxRooms = 512
+// DefaultMaxRooms caps the rooms open at once (Lobby.MaxRooms); a room holds up to a message's worth of
+// its creator's data.
+const DefaultMaxRooms = 512
 
 // MaxRoomMembers caps a room's players and visitors together (a Heroes V game has up to 8 players), so
 // a room and its chat channel can't gather a crowd of connections.
@@ -103,6 +106,8 @@ type Lobby struct {
 	Results Results // nil: results are only relayed
 	// Left is told a player address that has no lobby connection left (the relay frees its ports).
 	Left func(ip string)
+	// MaxRooms is the most rooms open at once; a CREATE_ROOM beyond it is refused.
+	MaxRooms int
 
 	mu          sync.Mutex
 	clients     []*client
@@ -135,7 +140,8 @@ type client struct {
 
 // New returns a lobby.
 func New(e *env.Env, log *logx.Logger) *Lobby {
-	return &Lobby{Env: e, Log: log, nextRoomID: FirstRoomID, nextMatchID: 1, matches: map[int]*Match{}}
+	return &Lobby{Env: e, Log: log, MaxRooms: DefaultMaxRooms, nextRoomID: FirstRoomID, nextMatchID: 1,
+		matches: map[int]*Match{}}
 }
 
 // Serve serves a lobby connection.
@@ -173,8 +179,12 @@ func (l *Lobby) Serve(conn *netsrv.Conn) {
 		if err != nil {
 			var bad *badRequest
 			if errors.As(err, &bad) {
-				// an unknown or malformed request must not drop the player
+				// an unknown or malformed request must not drop the player, and a request the game waits
+				// for an answer to gets its refusal
 				l.Log.Warnf("unhandled request from %s: %v", c.name(), err)
+				if res := refusal(req, bad.reason); res != nil {
+					c.SendMsg(res)
+				}
 				return nil
 			}
 			return err
@@ -196,12 +206,55 @@ func (c *client) name() string {
 	return c.RemoteAddr().String()
 }
 
-// badRequest is a request the lobby ignores (logged, the connection stays).
-type badRequest struct{ msg string }
+// badRequest is a request the lobby refuses (logged, the connection stays), with the reason the game
+// is given when it waits for the answer.
+type badRequest struct {
+	msg    string
+	reason int
+}
 
 func (e *badRequest) Error() string { return e.msg }
 
-func bad(format string, args ...any) error { return &badRequest{fmt.Sprintf(format, args...)} }
+// bad refuses a malformed or unknown request.
+func bad(format string, args ...any) error {
+	return &badRequest{fmt.Sprintf(format, args...), gsm.LobbyErrUnknown}
+}
+
+// refuse refuses a request for a reason the game shows (a gsm.LobbyErr code).
+func refuse(reason int, format string, args ...any) error {
+	return &badRequest{fmt.Sprintf(format, args...), reason}
+}
+
+// answered are the LOBBY_MSG requests the game sends and then waits for the reply to, in a
+// CStateWait*Reply state (or, for LOGIN, with nothing else to go on). Each reply decoder reads
+// [result, [subtype, [reason, group id]]] for a refusal (CREATE_ROOM: [reason, room name]), shows the
+// reason and goes back to the lobby; without a reply the game stays on its waiting screen for good.
+// GROUP_INFO_GET is answered by a GROUP_INFO notification, and the rest are notifications.
+var answered = map[gsm.LobbyMsg]bool{
+	gsm.LobbyGroupLeave: true, gsm.LobbyCreateRoom: true, gsm.LobbyStartGame: true, gsm.LobbyStartMatch: true,
+	gsm.LobbyLogin: true, gsm.LobbyJoinLobby: true, gsm.LobbyJoinRoom: true, gsm.LobbySubmitMatch: true,
+	gsm.LobbyGroupConfigUpdateRes: true, gsm.LobbyGameReady: true, gsm.LobbySetPlayerInfo: true,
+	gsm.LobbyMatchFinish: true,
+}
+
+// refusal is the failure reply to a refused request the game waits for, or nil.
+func refusal(req *gsm.Message, reason int) *gsm.Message {
+	n, ok := req.Data.Int(0)
+	if req.Header.Type != gsm.LOBBY_MSG || !ok || !answered[gsm.LobbyMsg(n)] {
+		return nil
+	}
+	args := groupArgs(req)
+	echo, ok := args.Str(0)
+	if !ok {
+		echo = "0"
+	}
+	if gsm.LobbyMsg(n) == gsm.LobbyCreateRoom {
+		// copied into a fixed buffer
+		echo, _ = args.Str(1)
+		echo = gsm.Cap(echo, gsm.LobbyNameSize)
+	}
+	return gsm.LobbyFail(req, reason, echo)
+}
 
 func (l *Lobby) send(c *client, sub gsm.LobbyMsg, data dl.List) {
 	m := gsm.LobbyNotification(sub, data)
@@ -552,6 +605,7 @@ func (l *Lobby) leaveRoom(c *client) {
 		l.closeRoom(r, remaining)
 		return
 	}
+	r.noteLeft(c.username)
 	l.sendMemberLeave(c, r.id, remaining)
 	l.sendRoomUpdate(r, nil)
 }
@@ -591,6 +645,70 @@ func (l *Lobby) leaveLobby(c *client) {
 	if id != 0 {
 		l.sendMemberLeave(c, id, l.lobbyMembers(id))
 	}
+}
+
+// announceWindow is how long after a player left its room the host may still announce it.
+const announceWindow = time.Minute
+
+// maxLeft caps the players a room remembers as having left.
+const maxLeft = 2 * MaxRoomMembers
+
+// noteLeft remembers that the player left the room, for the host's announcement.
+func (r *room) noteLeft(name string) {
+	now := time.Now()
+	if r.left == nil {
+		r.left = map[string]time.Time{}
+	}
+	for n, at := range r.left {
+		if now.Sub(at) > announceWindow || len(r.left) >= maxLeft {
+			delete(r.left, n)
+		}
+	}
+	r.left[name] = now
+}
+
+// roomChannel is the IRC channel of a group, #LobbyGrp<lobby server id>.<group id>.
+var roomChannel = regexp.MustCompile(`^#LobbyGrp[0-9]+\.([0-9]+)$`)
+
+// Announces reports whether the game of nick may post the chat announcement text (without its type
+// digit) in an IRC channel, besides the ones about itself. A room's host announces the players joining
+// and leaving its room in the room's channel ("bob has joined the game", "bob has left the game"), in
+// the game's language, starting with the player's name as the host was told it; the players don't
+// announce each other. So the host of the room may announce the room's members, and the players who
+// left it in the last minute; nobody else may announce anyone.
+func (l *Lobby) Announces(nick, channel, text string) bool {
+	m := roomChannel.FindStringSubmatch(channel)
+	if m == nil {
+		return false
+	}
+	id, err := strconv.Atoi(m[1])
+	if err != nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.findRoom(id)
+	if r == nil {
+		return false
+	}
+	host := l.master(r)
+	if host == nil || !strings.EqualFold(host.username, nick) {
+		return false
+	}
+	about := func(name string) bool {
+		return name != "" && strings.HasPrefix(text, gsm.Cap(name, MemberNameSize)+" ")
+	}
+	for _, c := range l.roomMembers(id) {
+		if about(c.username) {
+			return true
+		}
+	}
+	for name, at := range r.left {
+		if time.Since(at) <= announceWindow && about(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // Peers reports whether two player addresses are in the same room, or played a game together

@@ -120,6 +120,63 @@ func TestChat(t *testing.T) {
 	}
 }
 
+// The announcement policy lets the host announce another player in its room's channel: the game's
+// "bob has joined the game", which the host's client sends when bob joins.
+func TestAnnouncePolicy(t *testing.T) {
+	var asked []string
+	s := startWith(t, 30*time.Second, nil, func(srv *irc.Server) {
+		srv.Announces = func(nick, ch, text string) bool {
+			asked = append(asked, nick+" "+ch+" "+text)
+			return nick == "alice" && ch == channel && strings.HasPrefix(text, "bob ")
+		}
+	})
+	alice, bob, carol := s.player(t, "", "alice", true), s.player(t, "", "bob", true), s.player(t, "", "carol", true)
+	bob.Read(100 * time.Millisecond)
+	carol.Read(100 * time.Millisecond)
+	alice.Send("PRIVMSG " + channel + " :alice%16777215%9%0%0%Arial%2bob has joined the game")
+	for _, p := range []*gsclient.IRC{bob, carol} {
+		if !has(p.Read(300*time.Millisecond), func(l string) bool {
+			return strings.HasSuffix(l, "PRIVMSG "+channel+" :alice%16777215%9%0%0%Arial%2bob has joined the game")
+		}) {
+			t.Fatal("the host's announcement wasn't relayed")
+		}
+	}
+	// the policy decides about others only: its own announcement and plain chat don't ask it
+	asked = nil
+	carol.Send("PRIVMSG " + channel + " :carol%16777215%9%0%0%Arial%2carol has joined the game")
+	carol.Send("PRIVMSG " + channel + " :carol%16777215%9%0%0%Arial%1hi")
+	if lines := bob.Read(300 * time.Millisecond); len(lines) != 2 || len(asked) != 0 {
+		t.Fatalf("relayed %q, asked %q", lines, asked)
+	}
+	for _, line := range []string{
+		"PRIVMSG " + channel + " :carol%16777215%9%0%0%Arial%2bob has joined the game", // not the host
+		"PRIVMSG " + channel + " :alice%16777215%9%0%0%Arial%2carol has left the game", // not allowed about carol
+		"PRIVMSG bob :alice%16777215%9%0%0%Arial%2bob has joined the game",             // not a channel
+	} {
+		from := alice
+		if strings.Contains(line, ":carol%") {
+			from = carol
+		}
+		from.Send(line)
+		if has(bob.Read(300*time.Millisecond), func(l string) bool { return strings.Contains(l, "PRIVMSG") }) {
+			t.Fatalf("relayed %q", line)
+		}
+	}
+}
+
+func TestSanitizeChatFor(t *testing.T) {
+	about := func(text string) bool { return text == "bob has joined the game" }
+	if _, ok := irc.SanitizeChatFor("alice", ":alice%1%9%0%0%Arial%2bob has joined the game", about); !ok {
+		t.Error("allowed announcement dropped")
+	}
+	if _, ok := irc.SanitizeChatFor("alice", ":alice%1%9%0%0%Arial%2bob has left the game", about); ok {
+		t.Error("announcement relayed that the policy refused")
+	}
+	if _, ok := irc.SanitizeChatFor("alice", ":alice%1%9%0%0%Arial%2bob has joined the game", nil); ok {
+		t.Error("announcement about someone else relayed without a policy")
+	}
+}
+
 func TestPart(t *testing.T) {
 	s := start(t, 30*time.Second, nil)
 	alice, bob := s.player(t, "", "alice", true), s.player(t, "", "bob", true)
