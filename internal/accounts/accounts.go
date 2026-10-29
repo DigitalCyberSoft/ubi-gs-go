@@ -23,7 +23,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/scrypt"
-	_ "modernc.org/sqlite" // pure-Go SQLite driver
+	"modernc.org/sqlite" // pure-Go SQLite driver
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // Memory is the database path that keeps everything in memory only.
@@ -76,8 +77,10 @@ type Store struct {
 	Logf func(format string, args ...any)
 }
 
-// Open opens (and creates or migrates) the database at path, or an in-memory one for Memory. An
-// unreadable file is moved aside (`<path>.corrupt-<time>`) and a new one started.
+// Open opens (and creates or migrates) the database at path, or an in-memory one for Memory. A file that
+// isn't a database, or is damaged, is moved aside (`<path>.corrupt-<time>`) and a new one started. Any other
+// failure is returned and the file left alone: one the server may not open, or with a newer schema, would
+// otherwise be swapped for an empty database.
 func Open(path string, logf func(string, ...any)) (*Store, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -85,11 +88,11 @@ func Open(path string, logf func(string, ...any)) (*Store, error) {
 	s := &Store{path: path, Logf: logf}
 	db, err := openDB(path)
 	if err != nil {
-		if path == Memory {
+		if path == Memory || !damaged(err) {
 			return nil, err
 		}
 		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
-		logf("Accounts database %s is unreadable (%v), moved to %s; starting a new one", path, err, aside)
+		logf("Accounts database %s is damaged (%v), moved to %s; starting a new one", path, err, aside)
 		for _, suffix := range []string{"", "-wal", "-shm"} {
 			if _, statErr := os.Stat(path + suffix); statErr == nil {
 				if mvErr := os.Rename(path+suffix, aside+suffix); mvErr != nil {
@@ -103,6 +106,17 @@ func Open(path string, logf func(string, ...any)) (*Store, error) {
 	}
 	s.db = db
 	return s, nil
+}
+
+// damaged reports whether SQLite found the file isn't a database or is corrupt, the only failures that
+// moving it aside fixes.
+func damaged(err error) bool {
+	var e *sqlite.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	code := e.Code() & 0xff // the primary code of an extended one
+	return code == sqlite3.SQLITE_CORRUPT || code == sqlite3.SQLITE_NOTADB
 }
 
 func openDB(path string) (*sql.DB, error) {

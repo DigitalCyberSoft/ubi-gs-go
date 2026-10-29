@@ -72,6 +72,32 @@ Every setting is a command-line option or an environment variable; the option wi
 | `--no-firewall-check` | `UBIGS_FIREWALL_CHECK=off` | | Skip the read-only firewall check at start. |
 | `--quiet`, `--verbose` | `UBIGS_QUIET`, `UBIGS_VERBOSE` | | Log level. |
 
+### As a systemd service
+
+[`contrib/ubi-gs.service`](contrib/ubi-gs.service) starts the server at boot and restarts it if it fails. It runs as a user of its own that systemd makes up at start, keeps only the capability to bind port 80, and keeps the database in `/var/lib/ubi-gs`:
+
+```
+sudo install -m 755 ubi-gs /usr/local/bin/ubi-gs
+sudo install -m 644 contrib/ubi-gs.service /etc/systemd/system/
+sudo systemctl enable --now ubi-gs
+journalctl -u ubi-gs -f
+```
+
+- **Settings** are environment variables in a drop-in: run `sudo systemctl edit ubi-gs`, add the lines below, then `sudo systemctl restart ubi-gs`.
+  ```
+  [Service]
+  Environment=UBIGS_HOST=203.0.113.10
+  ```
+- **Updating:** install the new binary the same way, then `sudo systemctl restart ubi-gs`.
+- **Moving a server:** once the service has started once, stop it, copy the old `ubigs.db` in, and give it the directory's owner. Without the `chown` the service can't open the file, and stops with that error.
+  ```
+  sudo systemctl stop ubi-gs
+  sudo cp ubigs.db /var/lib/ubi-gs/ubigs.db
+  sudo chown --reference=/var/lib/ubi-gs /var/lib/ubi-gs/ubigs.db
+  sudo systemctl start ubi-gs
+  ```
+- **The firewall check** runs without root here, so it can't read the iptables/nftables rules and only says so; check the ports as root.
+
 ## Pointing the game at the server
 
 The game asks `http://gsconnect.ubisoft.com/gsinit.php?dp=<game id>` for the server list, with its bundled libcurl over plain HTTP. Make `gsconnect.ubisoft.com` reach the server; no game files change.
@@ -122,7 +148,7 @@ HommaRe doesn't send a player's real password. It registers a token derived from
 The server is public by default: it listens on all interfaces, and players reach it over the internet.
 
 - **Firewall.** Open the ports in the table at the top: TCP 80, 7777, 7779, 7782-7785 and UDP 7780, 7781, plus UDP 9000-9999 for the relay. After starting, the server checks the host firewall (reading only, never changing anything) and prints what to run if a port looks closed: `netsh` rules on Windows; `ufw`, `firewalld` or `iptables`/`nftables` commands on Linux. A router in front of the server must forward the same ports.
-- **Port 80 without root.** Don't run the server as root. Give the binary the capability (`sudo setcap cap_net_bind_service=+ep ./ubi-gs`), use systemd's `AmbientCapabilities=CAP_NET_BIND_SERVICE`, or run gsconnect on a high port behind a reverse proxy on port 80 (`--gsconnect-port 8080`, with `--host` set to the public address).
+- **Port 80 without root.** Don't run the server as root. Give the binary the capability (`sudo setcap cap_net_bind_service=+ep ./ubi-gs`), use systemd's `AmbientCapabilities=CAP_NET_BIND_SERVICE` (as [the provided unit](#as-a-systemd-service) does), or run gsconnect on a high port behind a reverse proxy on port 80 (`--gsconnect-port 8080`, with `--host` set to the public address).
 - **Limits.** Each service, gsconnect included, caps connections in total and per address, and closes silent ones. Behind a reverse proxy, every gsconnect connection comes from the proxy's address, so its per-address cap covers all players together: cap per address in the proxy, and raise `--max-per-ip` (which applies to every service) if needed. The NAT table and the relay are capped too, with one relay port per NAT client. Logins are rate-limited per address, with a growing wait after password misses; new accounts are limited per address and in total; password hashing (scrypt, N=2^14, r=8, p=1, about 65 ms per hash, the same parameters as the Python version so its databases keep working) runs on at most one worker per CPU. Refusals use the game's own login error codes.
 - **Chat and rooms.** So that the chat can't serve as a bot network's command channel, IRC does nothing for a connection until its nick is an account logged in from the same address, and drops it once that account isn't logged in anymore (checked when it joins or speaks, and at every keepalive). A channel takes at most 100 members and a connection at most 4 channels; messages, notices and topic changes go in bursts of 20, then 2 a second, per connection. At most 512 rooms are open, each with at most 16 members, and a room its creator never joins is closed.
 - **Logs** hold player names, addresses and chat, but never passwords or CD-key data. Keep them private.

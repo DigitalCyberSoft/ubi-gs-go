@@ -64,9 +64,35 @@ type Match struct {
 	// Order and Values are the submitted results by player name, in submission order.
 	Order  []string
 	Values map[string]dl.List
-	// Disputed are the players whose result (value 0) two submitters reported differently.
+	// Disputed are the players whose result (value 0) the clients reported differently, without a
+	// report from the client that finished the match to settle it.
 	Disputed map[string]bool
-	by       map[string]*client
+	reports  map[string]map[*client]dl.List
+}
+
+// settle decides each player's values from the clients' reports: the values all reports agree on (by
+// result), else the report of the client that finished the match (the host, which stayed to the end;
+// a client that quits early reports itself as the winner, as seen in the real game), else none: the
+// player is disputed and not rated.
+func (m *Match) settle(finisher *client) {
+	for name, reports := range m.reports {
+		results := map[string]bool{}
+		for _, v := range reports {
+			r := ""
+			if len(v) > 0 {
+				r = v[0].String()
+			}
+			results[r] = true
+		}
+		if len(results) <= 1 {
+			continue
+		}
+		if v, ok := reports[finisher]; ok {
+			m.Values[name] = v
+			continue
+		}
+		m.Disputed[name] = true
+	}
 }
 
 // Lobby is the lobby server's state.

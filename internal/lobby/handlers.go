@@ -240,7 +240,7 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 			return res, nil, nil
 		}
 		m := &Match{ID: l.nextMatchID, Room: id, Values: map[string]dl.List{},
-			Accounts: map[string]*accounts.Account{}, Disputed: map[string]bool{}, by: map[string]*client{}}
+			Accounts: map[string]*accounts.Account{}, Disputed: map[string]bool{}, reports: map[string]map[*client]dl.List{}}
 		m.Game, _ = r.gameTitle.Str()
 		members := l.roomMembers(id)
 		for _, member := range members {
@@ -286,13 +286,14 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 				if !ok1 || !ok2 {
 					continue
 				}
-				if old, seen := m.Values[name]; !seen {
+				if _, seen := m.Values[name]; !seen {
 					m.Order = append(m.Order, name)
-				} else if by := m.by[name]; by != c && len(old) > 0 && len(values) > 0 && !old[0].Equal(values[0]) {
-					m.Disputed[name] = true
 				}
 				m.Values[name] = values
-				m.by[name] = c
+				if m.reports[name] == nil {
+					m.reports[name] = map[*client]dl.List{}
+				}
+				m.reports[name][c] = values
 			}
 		}
 		return gsm.LobbyGroup(req), nil, nil
@@ -324,6 +325,7 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		} else {
 			final = dl.List{dl.S(strconv.Itoa(m.ID)), dl.S(gsm.ResultFail), dl.Strs("0")}
 		}
+		m.settle(c)
 		l.Log.Infof("rated match %d finished: %v", m.ID, final)
 		if l.Results != nil {
 			l.Results.MatchFinished(m)
