@@ -100,11 +100,18 @@ var beforeNick = map[string]bool{"nick": true, "user": true, "ping": true, "pong
 // name of an account logged in from the connection's address.
 type NickPolicy func(nick, ip string) bool
 
+// AnnouncePolicy decides whether the game of nick may post the announcement text (without its type
+// digit) in a channel when the text isn't about nick itself: with the lobby in the same process, a
+// room's host announcing the players joining and leaving its room in the room's channel.
+type AnnouncePolicy func(nick, channel, text string) bool
+
 // Server is the IRC service.
 type Server struct {
 	Log *logx.Logger
 	// Allowed, if set, restricts nicks.
 	Allowed NickPolicy
+	// Announces, if set, lets a client announce others (nil: only itself).
+	Announces AnnouncePolicy
 	// Timeout drops a client silent this long; a PING goes out at half of it.
 	Timeout time.Duration
 	// MaxChannelMembers caps the members of a channel.
@@ -454,7 +461,11 @@ const ChatFields = 7
 // shows the name and formatting from the payload, not the IRC nick, so the name is forced to the
 // sender's, the formatting fields must be plain numbers and a font name, and the game's own
 // announcements (type digit 2) must be about the sender.
-func SanitizeChat(nick, payload string) (string, bool) {
+func SanitizeChat(nick, payload string) (string, bool) { return SanitizeChatFor(nick, payload, nil) }
+
+// SanitizeChatFor is SanitizeChat, but an announcement about someone else passes when about (if set)
+// allows its text (without the type digit).
+func SanitizeChatFor(nick, payload string, about func(text string) bool) (string, bool) {
 	payload = strings.TrimPrefix(payload, ":")
 	fields := strings.SplitN(payload, "%", ChatFields)
 	if len(fields) != ChatFields {
@@ -470,7 +481,7 @@ func SanitizeChat(nick, payload string) (string, bool) {
 	}
 	// control characters could end the line or confuse the game's text renderer
 	text := controlChar.ReplaceAllString(fields[6], "")
-	if strings.HasPrefix(text, "2") && !strings.HasPrefix(text[1:], nick+" ") {
+	if strings.HasPrefix(text, "2") && !strings.HasPrefix(text[1:], nick+" ") && (about == nil || !about(text[1:])) {
 		return "", false
 	}
 	fields[0], fields[6] = nick, text
@@ -488,7 +499,13 @@ func (s *Server) message(c *client, cmd, params string) *ircError {
 	if !s.allow(c) {
 		return nil
 	}
-	chat, ok := SanitizeChat(c.nick, msg)
+	// the host of a room announces the players joining and leaving it ("bob has joined the game") in
+	// the room's channel; any other announcement must be about the sender
+	var about func(string) bool
+	if s.Announces != nil && strings.HasPrefix(target, "#") {
+		about = func(text string) bool { return s.Announces(c.nick, target, text) }
+	}
+	chat, ok := SanitizeChatFor(c.nick, msg, about)
 	if !ok {
 		s.Log.Warnf("dropped %s from %s: %q", cmd, c.ident(), msg)
 		return nil

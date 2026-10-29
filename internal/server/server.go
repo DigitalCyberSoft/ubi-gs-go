@@ -210,6 +210,7 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 	rt.LobbyMembers, rt.MaxLobbyMembers = s.lobby.Members, cfg.MaxConns
 	chat := irc.New(log.With("irc"), cfg.SocketTimeout)
 	chat.Allowed = rt.LoggedIn
+	chat.Announces = s.lobby.Announces
 	s.nat = &nat.Server{Log: log.With("nat"), Port: e.Ports.NAT, MaxClients: cfg.MaxNATClients, MaxPerIP: cfg.MaxPerIP}
 
 	if cfg.Relay {
@@ -363,6 +364,9 @@ func (s *Server) ServerID() string { return s.serverID }
 
 // Relay returns the relay, or nil.
 func (s *Server) Relay() *relay.Relay { return s.relay }
+
+// Lobby is the lobby service.
+func (s *Server) Lobby() *lobby.Lobby { return s.lobby }
 
 func (s *Server) closeAll() {
 	for _, c := range s.udp {

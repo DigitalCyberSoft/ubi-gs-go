@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -603,6 +605,7 @@ func (l *Lobby) leaveRoom(c *client) {
 		l.closeRoom(r, remaining)
 		return
 	}
+	r.noteLeft(c.username)
 	l.sendMemberLeave(c, r.id, remaining)
 	l.sendRoomUpdate(r, nil)
 }
@@ -642,6 +645,70 @@ func (l *Lobby) leaveLobby(c *client) {
 	if id != 0 {
 		l.sendMemberLeave(c, id, l.lobbyMembers(id))
 	}
+}
+
+// announceWindow is how long after a player left its room the host may still announce it.
+const announceWindow = time.Minute
+
+// maxLeft caps the players a room remembers as having left.
+const maxLeft = 2 * MaxRoomMembers
+
+// noteLeft remembers that the player left the room, for the host's announcement.
+func (r *room) noteLeft(name string) {
+	now := time.Now()
+	if r.left == nil {
+		r.left = map[string]time.Time{}
+	}
+	for n, at := range r.left {
+		if now.Sub(at) > announceWindow || len(r.left) >= maxLeft {
+			delete(r.left, n)
+		}
+	}
+	r.left[name] = now
+}
+
+// roomChannel is the IRC channel of a group, #LobbyGrp<lobby server id>.<group id>.
+var roomChannel = regexp.MustCompile(`^#LobbyGrp[0-9]+\.([0-9]+)$`)
+
+// Announces reports whether the game of nick may post the chat announcement text (without its type
+// digit) in an IRC channel, besides the ones about itself. A room's host announces the players joining
+// and leaving its room in the room's channel ("bob has joined the game", "bob has left the game"), in
+// the game's language, starting with the player's name as the host was told it; the players don't
+// announce each other. So the host of the room may announce the room's members, and the players who
+// left it in the last minute; nobody else may announce anyone.
+func (l *Lobby) Announces(nick, channel, text string) bool {
+	m := roomChannel.FindStringSubmatch(channel)
+	if m == nil {
+		return false
+	}
+	id, err := strconv.Atoi(m[1])
+	if err != nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	r := l.findRoom(id)
+	if r == nil {
+		return false
+	}
+	host := l.master(r)
+	if host == nil || !strings.EqualFold(host.username, nick) {
+		return false
+	}
+	about := func(name string) bool {
+		return name != "" && strings.HasPrefix(text, gsm.Cap(name, MemberNameSize)+" ")
+	}
+	for _, c := range l.roomMembers(id) {
+		if about(c.username) {
+			return true
+		}
+	}
+	for name, at := range r.left {
+		if time.Since(at) <= announceWindow && about(name) {
+			return true
+		}
+	}
+	return false
 }
 
 // Peers reports whether two player addresses are in the same room, or played a game together
