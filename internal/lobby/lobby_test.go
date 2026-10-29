@@ -293,7 +293,7 @@ func TestRatedMatch(t *testing.T) {
 	}
 }
 
-func TestDisputedResultNotRated(t *testing.T) {
+func TestDisagreementSettledByTheHost(t *testing.T) {
 	s := start(t, nil)
 	alice := join(t, s, "127.0.0.2", "alice", "pw")
 	bob := join(t, s, "127.0.0.3", "bob", "pw")
@@ -306,9 +306,10 @@ func TestDisputedResultNotRated(t *testing.T) {
 	bob.msgs() // the reply: bob's submission is in
 	alice.lobby("45", dl.S("1000"))
 	alice.msgs()
+	// the host finished the match: its report (alice won) counts
 	a, _ := s.Accounts().Find("alice")
-	if st, _ := s.Accounts().LadderStats(*a, proxy.LadderKey(game, "1")); len(st) != 0 {
-		t.Fatalf("a disputed result was rated: %v", st)
+	if st, _ := s.Accounts().LadderStats(*a, proxy.LadderKey(game, "1")); st["WINS"] != 1 {
+		t.Fatalf("the host's report didn't settle the result: %v", st)
 	}
 }
 
