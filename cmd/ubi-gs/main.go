@@ -17,6 +17,7 @@ import (
 
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/guard"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/limits"
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/lobby"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/logx"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/ports"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/relay"
@@ -145,6 +146,7 @@ func parse(args []string, stderr io.Writer) (*options, error) {
 	fs.IntVar(&c.MaxConns, "max-connections", ei("UBIGS_MAX_CONNECTIONS", limits.DefaultMaxConnections), "connections per service [UBIGS_MAX_CONNECTIONS]")
 	fs.IntVar(&c.MaxPerIP, "max-per-ip", ei("UBIGS_MAX_PER_IP", limits.DefaultMaxPerIP), "connections per service from one address [UBIGS_MAX_PER_IP]")
 	fs.IntVar(&c.MaxNATClients, "max-nat-clients", ei("UBIGS_MAX_NAT_CLIENTS", limits.DefaultMaxNATClients), "NAT table size [UBIGS_MAX_NAT_CLIENTS]")
+	fs.IntVar(&c.MaxRooms, "max-rooms", ei("UBIGS_MAX_ROOMS", lobby.DefaultMaxRooms), "lobby rooms open at once; creating one more is refused [UBIGS_MAX_ROOMS]")
 	fs.IntVar(&c.PortOffset, "port-offset", ei("UBIGS_PORT_OFFSET", 0), "move every service port (7777-7785) by this much; servers.ini follows [UBIGS_PORT_OFFSET]")
 	noGS := fs.Bool("no-gsconnect", !eb("UBIGS_GSCONNECT", true), "don't serve gsconnect (e.g. it runs behind a reverse proxy elsewhere) [UBIGS_GSCONNECT=off]")
 	fs.StringVar(&c.GSConnectBind, "gsconnect-bind", env("GSCONNECT_HOST", ""), "address gsconnect listens on; default: --bind [GSCONNECT_HOST]")
@@ -188,8 +190,8 @@ func parse(args []string, stderr io.Writer) (*options, error) {
 	if c.RelayMin, c.RelayMax, err = parseRange(*relayPorts); err != nil {
 		return nil, err
 	}
-	if c.MaxConns < 1 || c.MaxPerIP < 1 || c.MaxNATClients < 1 {
-		return nil, errors.New("connection limits must be at least 1")
+	if c.MaxConns < 1 || c.MaxPerIP < 1 || c.MaxNATClients < 1 || c.MaxRooms < 1 {
+		return nil, errors.New("connection and room limits must be at least 1")
 	}
 	if c.ServerID != "" && !serverIDPattern.MatchString(c.ServerID) {
 		return nil, fmt.Errorf("server id %q: expected 16 to 64 hex digits", c.ServerID)

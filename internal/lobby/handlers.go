@@ -375,7 +375,7 @@ func (l *Lobby) createRoom(c *client, req *gsm.Message, args dl.List) (*gsm.Mess
 	}
 	// one room waiting for its creator to join at a time
 	l.closeUnjoined(c)
-	if len(l.rooms) >= MaxRooms {
+	if len(l.rooms) >= l.MaxRooms {
 		return nil, nil, bad("CREATE_ROOM refused: %d rooms are open", len(l.rooms))
 	}
 	id := l.nextRoomID

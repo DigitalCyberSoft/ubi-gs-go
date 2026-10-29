@@ -29,8 +29,9 @@ const MemberNameSize = 36
 // FirstRoomID is the id of the first room created.
 const FirstRoomID = 1000
 
-// MaxRooms caps the rooms open at once; a room holds up to a message's worth of its creator's data.
-const MaxRooms = 512
+// DefaultMaxRooms caps the rooms open at once (Lobby.MaxRooms); a room holds up to a message's worth of
+// its creator's data.
+const DefaultMaxRooms = 512
 
 // MaxRoomMembers caps a room's players and visitors together (a Heroes V game has up to 8 players), so
 // a room and its chat channel can't gather a crowd of connections.
@@ -103,6 +104,8 @@ type Lobby struct {
 	Results Results // nil: results are only relayed
 	// Left is told a player address that has no lobby connection left (the relay frees its ports).
 	Left func(ip string)
+	// MaxRooms is the most rooms open at once; a CREATE_ROOM beyond it is refused.
+	MaxRooms int
 
 	mu          sync.Mutex
 	clients     []*client
@@ -135,7 +138,8 @@ type client struct {
 
 // New returns a lobby.
 func New(e *env.Env, log *logx.Logger) *Lobby {
-	return &Lobby{Env: e, Log: log, nextRoomID: FirstRoomID, nextMatchID: 1, matches: map[int]*Match{}}
+	return &Lobby{Env: e, Log: log, MaxRooms: DefaultMaxRooms, nextRoomID: FirstRoomID, nextMatchID: 1,
+		matches: map[int]*Match{}}
 }
 
 // Serve serves a lobby connection.
