@@ -299,7 +299,11 @@ func TestDisagreementSettledByTheHost(t *testing.T) {
 	bob := join(t, s, "127.0.0.3", "bob", "pw")
 	alice.createRoom()
 	bob.lobby("24", dl.S("1000"), dl.S(""), dl.S("448"), dl.S("0"), dl.S(gsVersion))
+	bob.msgs()
+	// the match exists before anyone submits (the connections are separate: a submission arriving first
+	// was dropped, and alice's report then counted alone)
 	alice.lobby("17", dl.S("1000"), dl.S("1"), dl.S("0"))
+	alice.msgs()
 	// each claims the win
 	alice.lobby("30", dl.S("1"), dl.S("0"), dl.L(dl.S("alice"), dl.S("21"), dl.S("22"), dl.S("0"), values("1")))
 	bob.lobby("30", dl.S("1"), dl.S("0"), dl.L(dl.S("alice"), dl.S("21"), dl.S("22"), dl.S("0"), values("0")))

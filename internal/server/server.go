@@ -263,10 +263,11 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 			ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second,
 			IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 		}
+		ln := limitListener{Listener: s.httpLn, limits: limits.New(cfg.MaxConns, cfg.MaxPerIP)}
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := s.http.Serve(s.httpLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := s.http.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Errorf("gsconnect: %v", err)
 			}
 		}()
@@ -286,6 +287,39 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 func listenTCP(addr string) (net.Listener, error) {
 	lc := net.ListenConfig{Control: reuseAddr}
 	return lc.Listen(context.Background(), "tcp4", addr)
+}
+
+// limitListener caps accepted connections in total and per address, as netsrv does for the GS
+// services; net/http has no such cap, so gsconnect took any number of connections from one address.
+type limitListener struct {
+	net.Listener
+	limits *limits.Limits
+}
+
+func (l limitListener) Accept() (net.Conn, error) {
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		ip := netsrv.HostIP(c.RemoteAddr())
+		if l.limits.Acquire(ip) {
+			return &limitConn{Conn: c, release: func() { l.limits.Release(ip) }}, nil
+		}
+		c.Close()
+	}
+}
+
+// limitConn gives its place back once closed.
+type limitConn struct {
+	net.Conn
+	once    sync.Once
+	release func()
+}
+
+func (c *limitConn) Close() error {
+	c.once.Do(c.release)
+	return c.Conn.Close()
 }
 
 // prune deletes accounts that never reached the lobby, at start and every hour.

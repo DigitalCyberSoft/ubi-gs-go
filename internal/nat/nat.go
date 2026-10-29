@@ -35,6 +35,8 @@ type Relay interface {
 	// Observed is called with a player's verified public address (its game port, from its ping) and
 	// returns the address to tell it instead.
 	Observed(real netip.AddrPort) (netip.AddrPort, bool)
+	// Release frees what Observed set up for an address the player's pings no longer come from.
+	Release(real netip.AddrPort)
 }
 
 // Client is a game's NAT connection.
@@ -164,9 +166,15 @@ func (s *Server) handlePing(data []byte, from netip.AddrPort, now time.Time) ([]
 		return nil, nil
 	}
 	c.lastSeen = now
+	old := c.Public
 	c.Public = from
 	told := from
 	if s.Relay != nil {
+		// one relay port per client: a ping with its id from another address (the game's mapping
+		// changed, or a forged source) moves the port instead of claiming one more
+		if old.IsValid() && old != from {
+			s.Relay.Release(old)
+		}
 		// every ping keeps the player's relay port
 		a, ok := s.Relay.Observed(from)
 		if !ok {

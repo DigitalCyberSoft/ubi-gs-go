@@ -328,6 +328,9 @@ func readOptions(buf []byte) ([]Option, error) {
 		keys = append(keys, clone(k))
 	}
 	var options []Option
+	// a repeated key keeps its first position and takes the last value, like a dict; the index keeps
+	// this linear, as the room info comes from any lobby client and can hold thousands of keys
+	index := map[string]int{}
 	for _, key := range keys {
 		data := f.next(2, -1, "RoomInfo: Options.IntValue")
 		if f.err != nil {
@@ -343,18 +346,12 @@ func readOptions(buf []byte) ([]Option, error) {
 			return nil, invalid("RoomInfo: Options.IntValue too short")
 		}
 		opt := Option{Key: key, Int: u32(iv), Value: clone(sv)}
-		// a repeated key keeps its first position and takes the last value, like a dict
-		replaced := false
-		for i := range options {
-			if string(options[i].Key) == string(key) {
-				options[i] = opt
-				replaced = true
-				break
-			}
+		if i, ok := index[string(key)]; ok {
+			options[i] = opt
+			continue
 		}
-		if !replaced {
-			options = append(options, opt)
-		}
+		index[string(key)] = len(options)
+		options = append(options, opt)
 	}
 	return options, nil
 }

@@ -50,12 +50,20 @@ type server struct {
 
 // start runs the IRC service on loopback; allowed restricts nicks (nil: any).
 func start(t *testing.T, timeout time.Duration, allowed irc.NickPolicy) *server {
+	return startWith(t, timeout, allowed, nil)
+}
+
+// startWith is start with edit changing the server's settings before it serves.
+func startWith(t *testing.T, timeout time.Duration, allowed irc.NickPolicy, edit func(*irc.Server)) *server {
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := irc.New(logx.Discard(), timeout)
 	s.Allowed = allowed
+	if edit != nil {
+		edit(s)
+	}
 	ns := &netsrv.Server{Name: "irc", Log: logx.Discard(), Limits: limits.New(10, 3), Timeout: timeout, Handle: s.Serve}
 	done := make(chan struct{})
 	go func() { ns.Serve(t.Context(), ln); close(done) }()
@@ -194,7 +202,7 @@ func TestNickPolicy(t *testing.T) {
 
 func TestPingKeepsQuietClient(t *testing.T) {
 	s := start(t, 1500*time.Millisecond, nil)
-	c := s.player(t, "", "", false)
+	c := s.player(t, "", "alice", false)
 	var lines []string
 	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); {
 		lines = append(lines, c.Read(50*time.Millisecond)...)

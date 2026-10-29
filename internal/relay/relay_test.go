@@ -149,3 +149,15 @@ func TestRangeUsedUp(t *testing.T) {
 		t.Fatal("allocated from an unusable range")
 	}
 }
+
+func TestRelease(t *testing.T) {
+	r := newRelay(t, Config{})
+	_, ra := game(t)
+	if _, ok := r.Observed(ra); !ok {
+		t.Fatal("no relay port")
+	}
+	r.Release(ra)
+	if e := r.Endpoints(); len(e) != 0 {
+		t.Fatalf("still open: %v", e)
+	}
+}

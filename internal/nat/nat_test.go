@@ -164,6 +164,33 @@ func (fakeRelay) Observed(real netip.AddrPort) (netip.AddrPort, bool) {
 	return netip.MustParseAddrPort("203.0.113.5:9001"), true
 }
 
+func (fakeRelay) Release(netip.AddrPort) {}
+
+// portsRelay holds a relay port per address, as the relay does.
+type portsRelay map[netip.AddrPort]bool
+
+func (r portsRelay) Observed(real netip.AddrPort) (netip.AddrPort, bool) {
+	r[real] = true
+	return fakeRelay{}.Observed(real)
+}
+
+func (r portsRelay) Release(real netip.AddrPort) { delete(r, real) }
+
+// Pings with a client's id from many addresses (forged sources) hold one relay port, not one each.
+func TestRelayPortPerClient(t *testing.T) {
+	s := newServer()
+	r := portsRelay{}
+	s.Relay = r
+	id := connect(t, s, time.Unix(0, 0))
+	for i := range 50 {
+		from := netip.AddrPortFrom(netip.AddrFrom4([4]byte{198, 51, 100, byte(i)}), 8888)
+		s.HandlePacket(ping(id), from, time.Unix(1, 0))
+	}
+	if len(r) != 1 {
+		t.Fatalf("%d relay ports for one client", len(r))
+	}
+}
+
 func TestRelayAddress(t *testing.T) {
 	s := newServer()
 	s.Relay = fakeRelay{}

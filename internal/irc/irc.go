@@ -3,11 +3,11 @@
 package irc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +66,7 @@ const (
 	errNoSuchNick       = "401"
 	errNoSuchChannel    = "403"
 	errCannotSendToChan = "404"
+	errTooManyChannels  = "405"
 	errUnknownCommand   = "421"
 	errNoNicknameGiven  = "431"
 	errErroneusNickname = "432"
@@ -73,7 +74,27 @@ const (
 	errNotOnChannel     = "442"
 	errNotRegistered    = "451"
 	errNeedMoreParams   = "461"
+	errChannelIsFull    = "471"
 )
+
+// The chat is kept to what the game uses it for (a lobby's channel and its room's, people typing) and
+// out of reach of a bot network looking for a command channel: nothing but registering works before a
+// nick, which must be a logged-in account and is dropped once that account isn't anymore; channels are
+// capped; and what a connection says is rate-limited.
+const (
+	// DefaultMaxChannelMembers is a channel's member cap (Server.MaxChannelMembers).
+	DefaultMaxChannelMembers = 100
+	// MaxChannelsPerClient caps the channels one connection is in.
+	MaxChannelsPerClient = 4
+	// MessageBurst and MessagesPerSecond limit the messages, notices and topics of a connection.
+	MessageBurst      = 20
+	MessagesPerSecond = 2
+	// MaxTopicSize caps a channel topic, in bytes.
+	MaxTopicSize = 200
+)
+
+// beforeNick are the commands a connection may send before its nick is accepted.
+var beforeNick = map[string]bool{"nick": true, "user": true, "ping": true, "pong": true, "quit": true}
 
 // NickPolicy decides which nicks a connection may use: with the router in the same process, only the
 // name of an account logged in from the connection's address.
@@ -86,6 +107,8 @@ type Server struct {
 	Allowed NickPolicy
 	// Timeout drops a client silent this long; a PING goes out at half of it.
 	Timeout time.Duration
+	// MaxChannelMembers caps the members of a channel.
+	MaxChannelMembers int
 
 	mu       sync.Mutex
 	clients  map[string]*client
@@ -124,11 +147,16 @@ type client struct {
 	realname string
 	channels map[string]*channel
 	order    []string // channel names in join order
+	// tokens are the messages the client may send now, refilled since refill
+	tokens    float64
+	refill    time.Time
+	throttled time.Time // last log of its dropped messages
 }
 
 // New returns an IRC server.
 func New(log *logx.Logger, timeout time.Duration) *Server {
-	return &Server{Log: log, Timeout: timeout, clients: map[string]*client{}, channels: map[string]*channel{}}
+	return &Server{Log: log, Timeout: timeout, MaxChannelMembers: DefaultMaxChannelMembers,
+		clients: map[string]*client{}, channels: map[string]*channel{}}
 }
 
 func (c *client) ident() string {
@@ -156,7 +184,7 @@ var lineSep = regexp.MustCompile("\r?\n")
 
 // Serve serves an IRC connection.
 func (s *Server) Serve(conn *netsrv.Conn) {
-	c := &client{conn: conn, channels: map[string]*channel{}}
+	c := &client{conn: conn, channels: map[string]*channel{}, tokens: MessageBurst, refill: time.Now()}
 	s.Log.Infof("client connected: %s", conn.RemoteAddr())
 	defer s.finish(c)
 	var pending []byte
@@ -190,10 +218,14 @@ func (s *Server) Serve(conn *netsrv.Conn) {
 					continue
 				}
 				pending = append(pending, payload...)
-				lines := lineSep.Split(string(pending), -1)
-				pending = []byte(lines[len(lines)-1])
-				for _, line := range lines[:len(lines)-1] {
-					s.handleLine(c, line)
+				// only a newline in this payload can end a line: splitting the whole buffer for
+				// every frame let a stream of tiny frames rescan up to 64 KB each
+				if bytes.IndexByte(payload, '\n') >= 0 {
+					lines := lineSep.Split(string(pending), -1)
+					pending = []byte(lines[len(lines)-1])
+					for _, line := range lines[:len(lines)-1] {
+						s.handleLine(c, line)
+					}
 				}
 				if len(pending) > 0xFFFF {
 					s.Log.Warnf("closing %s: line too long", c.ident())
@@ -210,6 +242,15 @@ func (s *Server) Serve(conn *netsrv.Conn) {
 			}
 			if netsrv.IsTimeout(err) && s.Timeout > 0 {
 				if !pinged {
+					// the game registers as it connects, and chats only while it is logged in
+					if c.nick == "" {
+						s.Log.Infof("closing %s: never registered", conn.RemoteAddr())
+						return
+					}
+					if !s.loggedIn(c) {
+						s.Log.Infof("closing %s: %s is no longer logged in from %s", c.ident(), c.nick, conn.IP)
+						return
+					}
 					pinged = true
 					s.sendTo(c, "PING :"+ServerName)
 					continue
@@ -228,7 +269,19 @@ func (s *Server) handleLine(c *client, line string) {
 	defer s.mu.Unlock()
 	var reply string
 	var ircErr *ircError
-	switch strings.ToLower(command) {
+	cmd := strings.ToLower(command)
+	switch {
+	case c.nick == "" && !beforeNick[cmd]:
+		// no listening in on channels, or setting their topics, without a logged-in account
+		ircErr = &ircError{errNotRegistered, ":You have not registered"}
+		cmd = ""
+	case (cmd == "join" || cmd == "privmsg" || cmd == "notice" || cmd == "topic") && !s.loggedIn(c):
+		s.Log.Infof("closing %s: %s is no longer logged in from %s", c.ident(), c.nick, c.conn.IP)
+		s.drop(c)
+		return
+	}
+	switch cmd {
+	case "":
 	case "nick":
 		reply, ircErr = s.nick(c, params)
 	case "user":
@@ -250,8 +303,6 @@ func (s *Server) handleLine(c *client, line string) {
 		reply = s.ison(c, params)
 	case "mode":
 		reply, ircErr = s.mode(c, params)
-	case "dump":
-		s.dump()
 	default:
 		s.Log.Infof("no handler for command: %s. Full line: %q", command, line)
 		ircErr = &ircError{errUnknownCommand, command + " :Unknown command"}
@@ -266,6 +317,27 @@ func (s *Server) handleLine(c *client, line string) {
 }
 
 type ircError struct{ code, value string }
+
+// loggedIn reports whether the client's nick is still an account logged in from its address.
+func (s *Server) loggedIn(c *client) bool {
+	return s.Allowed == nil || s.Allowed(c.nick, c.conn.IP)
+}
+
+// allow spends one of the client's message tokens, or reports that it has none left. s.mu is held.
+func (s *Server) allow(c *client) bool {
+	now := time.Now()
+	c.tokens = min(MessageBurst, c.tokens+now.Sub(c.refill).Seconds()*MessagesPerSecond)
+	c.refill = now
+	if c.tokens < 1 {
+		if now.Sub(c.throttled) > time.Minute {
+			c.throttled = now
+			s.Log.Warnf("%s sends too fast: dropping its messages", c.ident())
+		}
+		return false
+	}
+	c.tokens--
+	return true
+}
 
 var badNick = regexp.MustCompile(`[^a-zA-Z0-9\-\[\]'` + "`" + `^{}_.]`)
 
@@ -333,6 +405,15 @@ func (s *Server) join(c *client, params string) *ircError {
 			return &ircError{errNoSuchChannel, name + " :No such channel"}
 		}
 		ch := s.channels[name]
+		if c.channels[name] == nil {
+			if len(c.channels) >= MaxChannelsPerClient {
+				return &ircError{errTooManyChannels, name + " :You have joined too many channels"}
+			}
+			if ch != nil && len(ch.members) >= s.MaxChannelMembers {
+				s.Log.Warnf("%s can't join %s: full", c.ident(), name)
+				return &ircError{errChannelIsFull, name + " :Cannot join channel (+l)"}
+			}
+		}
 		if ch == nil {
 			ch = &channel{name: name, topic: "No topic", topicBy: "Unknown"}
 			s.channels[name] = ch
@@ -404,6 +485,9 @@ func (s *Server) message(c *client, cmd, params string) *ircError {
 	if c.nick == "" {
 		return &ircError{errNotRegistered, ":You have not registered"}
 	}
+	if !s.allow(c) {
+		return nil
+	}
 	chat, ok := SanitizeChat(c.nick, msg)
 	if !ok {
 		s.Log.Warnf("dropped %s from %s: %q", cmd, c.ident(), msg)
@@ -450,8 +534,15 @@ func (s *Server) topic(c *client, params string) (string, *ircError) {
 		return "", &ircError{errCannotSendToChan, ch.name + " :Cannot send to channel"}
 	}
 	if topic != "" {
-		ch.topic = strings.TrimLeft(topic, ":")
-		ch.topicBy = c.nick
+		if !s.allow(c) {
+			return "", nil
+		}
+		// everyone joining gets the topic: no control characters, a bounded size
+		topic = controlChar.ReplaceAllString(strings.TrimLeft(topic, ":"), "")
+		if len(topic) > MaxTopicSize {
+			topic = topic[:MaxTopicSize]
+		}
+		ch.topic, ch.topicBy = topic, c.nick
 	}
 	return ":" + c.ident() + " TOPIC " + name + " :" + ch.topic, nil
 }
@@ -532,22 +623,6 @@ func (s *Server) mode(c *client, params string) (string, *ircError) {
 		return "", nil
 	}
 	return ":" + ServerName + " MODE " + target + " " + mode, nil
-}
-
-func (s *Server) dump() {
-	nicks := make([]string, 0, len(s.clients))
-	for n := range s.clients {
-		nicks = append(nicks, n)
-	}
-	sort.Strings(nicks)
-	s.Log.Infof("clients: %v", nicks)
-	for name, ch := range s.channels {
-		var members []string
-		for _, m := range ch.members {
-			members = append(members, m.nick)
-		}
-		s.Log.Infof("channel %s: %v", name, members)
-	}
 }
 
 // finish removes a gone client from its channels and the nick table.

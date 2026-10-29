@@ -371,6 +371,17 @@ func (r *Relay) Forget(ip string) {
 	}
 }
 
+// Release frees the relay port of an address its player's pings no longer come from (the NAT service's
+// hook).
+func (r *Relay) Release(real netip.AddrPort) {
+	real = netip.AddrPortFrom(real.Addr().Unmap(), real.Port())
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e := r.byReal[real]; e != nil {
+		r.free(e, "its pings come from another address")
+	}
+}
+
 // free closes a relay port. r.mu is held.
 func (r *Relay) free(e *endpoint, why string) {
 	delete(r.byReal, e.real)
