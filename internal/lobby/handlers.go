@@ -396,7 +396,12 @@ func (l *Lobby) createRoom(c *client, req *gsm.Message, args dl.List) (*gsm.Mess
 	info.GroupID = uint32(id)
 	info.LobbySrvID = 1
 	l.rooms = append(l.rooms, r)
-	l.Log.Infof("%s created room %d", c.name(), id)
+	layout := ""
+	if d := info.Differences(); d != "" {
+		// the expansions' room info
+		layout = " (room info fields " + d + ")"
+	}
+	l.Log.Infof("%s created room %d%s", c.name(), id, layout)
 	for _, m := range l.lobbyMembers(parent) {
 		if m != c && m.roomID == 0 {
 			lst, _ := l.roomList(r, m).List()

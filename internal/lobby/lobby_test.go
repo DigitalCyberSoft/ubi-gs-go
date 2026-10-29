@@ -1,6 +1,7 @@
 package lobby_test
 
 import (
+	"bytes"
 	"encoding/binary"
 	"net"
 	"net/netip"
@@ -221,6 +222,61 @@ func TestRoomFlow(t *testing.T) {
 	alice.Close()
 	if got := bob.msgs(); len(got) != 2 || got[0].String() != "['55', ['"+room+"']]" || got[1].String() != "['51', ['alice', '1']]" {
 		t.Fatalf("host gone: %v", got)
+	}
+}
+
+// otherLayout is the room info vector laid out differently, like the expansions': without its last field
+// (40, one byte) and with a field 1.60 doesn't have.
+func otherLayout(t *testing.T) []byte {
+	in := roomInfo(t)
+	// the serialization mode stream (id 4, 4 bytes), then the data stream with a 4-byte size
+	if in[0] != 4 || in[1] != 8 || in[6] != 1 || in[7]&1 != 1 {
+		t.Fatal("unexpected room info vector")
+	}
+	size := int(binary.LittleEndian.Uint32(in[7:11]) >> 1)
+	data := in[11 : 11+size]
+	if data[size-3] != 40 || data[size-2] != 2 {
+		t.Fatal("unexpected last field")
+	}
+	data = append(data[:size-3:size-3], 41, 6, 'n', 'e', 'w')
+	out := binary.LittleEndian.AppendUint32(append([]byte(nil), in[:7]...), uint32(len(data))<<1|1)
+	return append(append(out, data...), in[11+size:]...)
+}
+
+// Hammers of Fate and Tribes of the East players couldn't create a game: the lobby refused their room
+// info, which isn't laid out like 1.60's. The room is created, and its info reaches the lobby as sent.
+func TestRoomInfoOfAnotherLayout(t *testing.T) {
+	s := start(t, nil)
+	alice := join(t, s, "127.0.0.2", "alice", "pw")
+	bob := join(t, s, "127.0.0.3", "bob", "pw")
+	alice.msgs()
+	bob.msgs()
+	alice.lobby("12", dl.S("1"), dl.S("alice's Game"), dl.S(game), dl.S("7"), dl.S("2"), dl.S("0"),
+		dl.B(otherLayout(t)), dl.S(""), dl.S(""), dl.S(gsVersion), dl.B(nil))
+	room := ""
+	for _, m := range notifs(alice.msgs(), "38") {
+		if sub, _ := m.List(1); len(sub) > 1 && sub[0].String() == "'12'" {
+			ids, _ := sub.List(1)
+			room, _ = ids.Str(0)
+		}
+	}
+	if room == "" {
+		t.Fatal("no CREATE_ROOM reply")
+	}
+	ng := notifs(bob.msgs(), "54")
+	if len(ng) != 1 {
+		t.Fatalf("NEW_GROUP: %v", ng)
+	}
+	data, _ := ng[0].List(1)
+	gi, _ := data.Bin(10)
+	info, err := h5.DeserializeRoomInfo(gi)
+	if err != nil || strconv.Itoa(int(info.GroupID)) != room || !bytes.Contains(gi, []byte{41, 6, 'n', 'e', 'w'}) {
+		t.Fatalf("room info in the lobby: %x (%v)", gi, err)
+	}
+	// the creator joins it
+	alice.lobby("24", dl.S(room), dl.S(""), dl.S("448"), dl.S("0"), dl.S(gsVersion))
+	if got := alice.msgs(); len(notifs(got, "53")) == 0 || len(notifs(got, "38")) == 0 {
+		t.Fatalf("join: %v", got)
 	}
 }
 

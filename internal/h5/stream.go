@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // Stream is one field of a serialized structure: an id byte, a size (7 bits in one byte, or 31 bits in
@@ -123,23 +125,163 @@ func (f *fields) next(id byte, size int, name string) []byte {
 	return s.Data
 }
 
-// nextOrEmpty reads a field that must have the id unless it is empty (the reference reader accepts an
-// empty field of any id there).
-func (f *fields) nextOrEmpty(id byte, name string) []byte {
-	if f.err != nil {
-		return nil
+// field is one field of a structure as it came.
+type field struct {
+	id    byte
+	known bool   // read into the structure, and written from it
+	data  []byte // the data of a field kept as it came
+}
+
+// codec reads and writes one field of a structure.
+type codec[T any] struct {
+	id       byte
+	name     string
+	size     int  // -1: any
+	required bool // the lobby changes it, so it must be there and read
+	read     func(v *T, b []byte) error
+	write    func(v *T) []byte
+}
+
+func codecFor[T any](codecs []codec[T], id byte) *codec[T] {
+	for i := range codecs {
+		if codecs[i].id == id {
+			return &codecs[i]
+		}
 	}
-	s, n, err := readStream(f.buf)
-	if err != nil {
-		f.err = fmt.Errorf("%s (%d): %w", name, id, err)
-		return nil
+	return nil
+}
+
+// readFields reads a structure's fields into v by id and returns their layout, which writeFields keeps.
+// The expansions don't lay out the room info like 1.60 (Hammers of Fate's differs after field 33, Tribes
+// of the East's after field 11), so a field the codecs don't know, or not in the form they read, is kept
+// as it came and written back unchanged. Only the required fields must be there and read.
+func readFields[T any](buf []byte, v *T, codecs []codec[T], what string) ([]field, error) {
+	var layout []field
+	var state [256]byte // 1: seen, 2: read
+	for len(buf) > 0 {
+		s, n, err := readStream(buf)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+		buf = buf[n:]
+		c := codecFor(codecs, s.ID)
+		if c == nil {
+			layout = append(layout, field{id: s.ID, data: clone(s.Data)})
+			continue
+		}
+		if state[s.ID] != 0 {
+			// the lobby must change every copy the game could read
+			return nil, invalid("%s: field %s (%d) repeated", what, c.name, c.id)
+		}
+		state[s.ID] = 1
+		if c.size >= 0 && len(s.Data) != c.size {
+			err = invalid("missing/invalid field - %s: %s (%d)", what, c.name, c.id)
+		} else {
+			err = c.read(v, s.Data)
+		}
+		if err != nil {
+			if c.required {
+				return nil, err
+			}
+			layout = append(layout, field{id: s.ID, data: clone(s.Data)})
+			continue
+		}
+		state[s.ID] = 2
+		layout = append(layout, field{id: s.ID, known: true})
 	}
-	if len(s.Data) > 0 && s.ID != id {
-		f.err = invalid("missing/invalid field - %s (%d)", name, id)
-		return nil
+	for _, c := range codecs {
+		if c.required && state[c.id] != 2 {
+			return nil, invalid("missing/invalid field - %s: %s (%d)", what, c.name, c.id)
+		}
 	}
-	f.buf = f.buf[n:]
-	return s.Data
+	return layout, nil
+}
+
+// writeFields writes a structure's fields in its layout, or, for a structure made here, every codec's
+// field in their order (1.60's).
+func writeFields[T any](v *T, layout []field, codecs []codec[T]) []byte {
+	var out []byte
+	if layout == nil {
+		for _, c := range codecs {
+			out = appendStream(out, c.id, c.write(v))
+		}
+		return out
+	}
+	for _, f := range layout {
+		data := f.data
+		if f.known {
+			data = codecFor(codecs, f.id).write(v)
+		}
+		out = appendStream(out, f.id, data)
+	}
+	return out
+}
+
+// differences describes how a layout differs from the codecs': the fields kept as they came (16 at most
+// listed) and the codecs' fields it doesn't have.
+func differences[T any](layout []field, codecs []codec[T]) string {
+	if layout == nil {
+		return ""
+	}
+	var have [256]bool
+	var kept, missing []string
+	more := 0
+	for _, f := range layout {
+		have[f.id] = true
+		switch {
+		case f.known:
+		case len(kept) < 16:
+			kept = append(kept, fmt.Sprintf("%d (size %d)", f.id, len(f.data)))
+		default:
+			more++
+		}
+	}
+	if more > 0 {
+		kept = append(kept, fmt.Sprintf("%d more", more))
+	}
+	for _, c := range codecs {
+		if !have[c.id] {
+			missing = append(missing, strconv.Itoa(int(c.id)))
+		}
+	}
+	var parts []string
+	if len(kept) > 0 {
+		parts = append(parts, "kept as sent: "+strings.Join(kept, ", "))
+	}
+	if len(missing) > 0 {
+		parts = append(parts, "missing: "+strings.Join(missing, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func must[T any](c codec[T]) codec[T] {
+	c.required = true
+	return c
+}
+
+func u32Field[T any](id byte, name string, at func(*T) *uint32) codec[T] {
+	return codec[T]{id: id, name: name, size: 4,
+		read:  func(v *T, b []byte) error { *at(v) = u32(b); return nil },
+		write: func(v *T) []byte { return le32(*at(v)) }}
+}
+
+func boolField[T any](id byte, name string, at func(*T) *bool) codec[T] {
+	return codec[T]{id: id, name: name, size: 1,
+		read:  func(v *T, b []byte) error { *at(v) = flag(b); return nil },
+		write: func(v *T) []byte { return boolByte(*at(v)) }}
+}
+
+func bytesField[T any](id byte, name string, at func(*T) *[]byte) codec[T] {
+	return codec[T]{id: id, name: name, size: -1,
+		read:  func(v *T, b []byte) error { *at(v) = clone(b); return nil },
+		write: func(v *T) []byte { return *at(v) }}
+}
+
+// nestedField is a string nested in an id 2 field.
+func nestedField[T any](id byte, name string, at func(*T) *[]byte) codec[T] {
+	return codec[T]{id: id, name: name, size: -1,
+		read:  func(v *T, b []byte) (err error) { *at(v), err = readNestedString(b); return },
+		write: func(v *T) []byte { return appendStream(nil, 2, *at(v)) }}
 }
 
 func u32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }

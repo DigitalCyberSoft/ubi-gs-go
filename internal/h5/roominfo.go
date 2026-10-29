@@ -57,45 +57,49 @@ type PlayerInfo struct {
 	LocalIP   [4]byte // private address
 	LocalPad  [12]byte
 	Int38     uint32 // unknown
+	layout    []field
+}
+
+// playerFields are the fields of 1.60's player info, in its order.
+var playerFields = []codec[PlayerInfo]{
+	bytesField(2, "Username", func(p *PlayerInfo) *[]byte { return &p.Username }),
+	{id: 3, name: "ExtIP", size: 18, required: true,
+		read:  func(p *PlayerInfo, b []byte) (err error) { p.ExtIP, err = readSockAddr(b, "PlayerInfo"); return },
+		write: func(p *PlayerInfo) []byte { return writeSockAddr(p.ExtIP) }},
+	{id: 4, name: "LocalPortIP", size: -1, required: true, read: readLocalPortIP, write: writeLocalPortIP},
+	u32Field(5, "Int38", func(p *PlayerInfo) *uint32 { return &p.Int38 }),
 }
 
 // ParsePlayerInfo reads the fields of a player info.
 func ParsePlayerInfo(buf []byte) (*PlayerInfo, error) {
-	f := fields{buf: buf}
 	p := &PlayerInfo{}
-	p.Username = clone(f.next(2, -1, "PlayerInfo: Username"))
-	ext := f.next(3, 18, "PlayerInfo: ExtIP")
-	portIP := f.next(4, -1, "PlayerInfo: LocalPortIP")
-	int38 := f.next(5, 4, "PlayerInfo: Int38")
-	if f.err != nil {
-		return nil, f.err
-	}
 	var err error
-	if p.ExtIP, err = readSockAddr(ext, "PlayerInfo"); err != nil {
+	if p.layout, err = readFields(buf, p, playerFields, "PlayerInfo"); err != nil {
 		return nil, err
 	}
-	pf := fields{buf: portIP}
-	port := pf.next(2, 2, "PlayerInfo: PortIP.Port")
-	ip := pf.next(3, 16, "PlayerInfo: PortIP.IP")
-	if pf.err != nil {
-		return nil, pf.err
+	return p, nil
+}
+
+func readLocalPortIP(p *PlayerInfo, b []byte) error {
+	f := fields{buf: b}
+	port := f.next(2, 2, "PlayerInfo: PortIP.Port")
+	ip := f.next(3, 16, "PlayerInfo: PortIP.IP")
+	if f.err != nil {
+		return f.err
 	}
 	p.LocalPort = binary.LittleEndian.Uint16(port)
 	copy(p.LocalIP[:], ip[0:4])
 	copy(p.LocalPad[:], ip[4:16])
-	p.Int38 = u32(int38)
-	return p, nil
+	return nil
+}
+
+func writeLocalPortIP(p *PlayerInfo) []byte {
+	out := appendStream(nil, 2, binary.LittleEndian.AppendUint16(nil, p.LocalPort))
+	return appendStream(out, 3, append(p.LocalIP[:], p.LocalPad[:]...))
 }
 
 // fields writes the player info's fields.
-func (p *PlayerInfo) fields() []byte {
-	out := appendStream(nil, 2, p.Username)
-	out = appendStream(out, 3, writeSockAddr(p.ExtIP))
-	portIP := appendStream(nil, 2, binary.LittleEndian.AppendUint16(nil, p.LocalPort))
-	portIP = appendStream(portIP, 3, append(p.LocalIP[:], p.LocalPad[:]...))
-	out = appendStream(out, 4, portIP)
-	return appendStream(out, 5, le32(p.Int38))
-}
+func (p *PlayerInfo) fields() []byte { return writeFields(p, p.layout, playerFields) }
 
 // Serialize writes the player info as a complete structure (SET_PLAYER_INFO's member data).
 func (p *PlayerInfo) Serialize() []byte { return wrap(p.fields()) }
@@ -159,6 +163,54 @@ type RoomInfo struct {
 	Int108          uint32 // idx 38
 	CombatTurnSpeed uint32 // idx 39
 	Flag110         bool   // idx 40
+	layout          []field
+}
+
+// roomFields are the fields of 1.60's room info, in its order. The lobby sets the ids and changes the
+// addresses, the host's and the players'.
+var roomFields = []codec[RoomInfo]{
+	must(u32Field(2, "GroupID", func(r *RoomInfo) *uint32 { return &r.GroupID })),
+	must(u32Field(3, "LobbySrvID", func(r *RoomInfo) *uint32 { return &r.LobbySrvID })),
+	{id: 4, name: "host IP", size: 18, required: true,
+		read:  func(r *RoomInfo, b []byte) (err error) { r.HostIP, err = readSockAddr(b, "RoomInfo"); return },
+		write: func(r *RoomInfo) []byte { return writeSockAddr(r.HostIP) }},
+	boolField(6, "bHostLogicInitialized", func(r *RoomInfo) *bool { return &r.HostLogicInit }),
+	bytesField(7, "GroupName", func(r *RoomInfo) *[]byte { return &r.GroupName }),
+	bytesField(8, "Password", func(r *RoomInfo) *[]byte { return &r.Password }),
+	boolField(9, "IsPasswordProtected", func(r *RoomInfo) *bool { return &r.IsPwdProtected }),
+	boolField(10, "GhostMode", func(r *RoomInfo) *bool { return &r.GhostMode }),
+	boolField(11, "QuickCombat", func(r *RoomInfo) *bool { return &r.QuickCombat }),
+	boolField(12, "FastCombatTurns", func(r *RoomInfo) *bool { return &r.FastCombatTurns }),
+	u32Field(13, "TimeLimit", func(r *RoomInfo) *uint32 { return &r.TimeLimit }),
+	u32Field(14, "DifficultyID", func(r *RoomInfo) *uint32 { return &r.DifficultyID }),
+	nestedField(15, "MapDescriptor", func(r *RoomInfo) *[]byte { return &r.MapDesc }),
+	{id: 19, name: "Teams", size: -1,
+		read:  func(r *RoomInfo, b []byte) (err error) { r.Teams, err = readUints(b); return },
+		write: func(r *RoomInfo) []byte { return writeUints(r.Teams) }},
+	u32Field(20, "MaxPlayers", func(r *RoomInfo) *uint32 { return &r.MaxPlayers }),
+	u32Field(21, "MapSize", func(r *RoomInfo) *uint32 { return &r.MapSize }),
+	{id: 22, name: "PlayerInfos", size: -1, required: true,
+		read:  func(r *RoomInfo, b []byte) (err error) { r.PlayerInfos, err = readPlayerInfos(b); return },
+		write: func(r *RoomInfo) []byte { return writePlayerInfos(r.PlayerInfos) }},
+	u32Field(23, "GameVersion", func(r *RoomInfo) *uint32 { return &r.GameVersion }),
+	boolField(24, "IsSaved", func(r *RoomInfo) *bool { return &r.IsSaved }),
+	{id: 25, name: "GUID", size: 16,
+		read:  func(r *RoomInfo, b []byte) error { copy(r.GUID[:], b); return nil },
+		write: func(r *RoomInfo) []byte { return r.GUID[:] }},
+	boolField(26, "SendResults", func(r *RoomInfo) *bool { return &r.SendResultsWait }),
+	{id: 27, name: "Options", size: -1,
+		read:  func(r *RoomInfo, b []byte) (err error) { r.Options, err = readOptions(b); return },
+		write: func(r *RoomInfo) []byte { return writeOptions(r.Options) }},
+	boolField(28, "IsArena", func(r *RoomInfo) *bool { return &r.IsArena }),
+	u32Field(29, "HostChecksum", func(r *RoomInfo) *uint32 { return &r.HostChecksum }),
+	u32Field(30, "AdventureType", func(r *RoomInfo) *uint32 { return &r.AdventureType }),
+	nestedField(31, "MapDescTag", func(r *RoomInfo) *[]byte { return &r.MapDescTag }),
+	bytesField(32, "MapGoal", func(r *RoomInfo) *[]byte { return &r.MapGoal }),
+	bytesField(33, "ArenaMapName", func(r *RoomInfo) *[]byte { return &r.ArenaMapName }),
+	u32Field(37, "Int104", func(r *RoomInfo) *uint32 { return &r.Int104 }),
+	u32Field(38, "Int108", func(r *RoomInfo) *uint32 { return &r.Int108 }),
+	u32Field(39, "CombatTurnSpeed", func(r *RoomInfo) *uint32 { return &r.CombatTurnSpeed }),
+	boolField(40, "Flag110", func(r *RoomInfo) *bool { return &r.Flag110 }),
 }
 
 // DeserializeRoomInfo reads a room's group info buffer.
@@ -171,77 +223,17 @@ func DeserializeRoomInfo(buf []byte) (*RoomInfo, error) {
 }
 
 func parseRoomInfo(buf []byte) (*RoomInfo, error) {
-	f := fields{buf: buf}
 	r := &RoomInfo{}
-	groupID := f.next(2, 4, "RoomInfo: GroupID")
-	lobbyID := f.next(3, 4, "RoomInfo: LobbySrvID")
-	host := f.next(4, 18, "RoomInfo: host IP")
-	hostInit := f.next(6, 1, "RoomInfo: bHostLogicInitialized")
-	r.GroupName = clone(f.nextOrEmpty(7, "RoomInfo: GroupName"))
-	r.Password = clone(f.nextOrEmpty(8, "RoomInfo: Password"))
-	pwd := f.next(9, 1, "RoomInfo: IsPasswordProtected")
-	ghost := f.next(10, 1, "RoomInfo: GhostMode")
-	quick := f.next(11, 1, "RoomInfo: QuickCombat")
-	fast := f.next(12, 1, "RoomInfo: FastCombatTurns")
-	timeLimit := f.next(13, 4, "RoomInfo: TimeLimit")
-	difficulty := f.next(14, 4, "RoomInfo: DifficultyID")
-	mapDesc := f.next(15, -1, "RoomInfo: MapDescriptor")
-	teams := f.next(19, -1, "RoomInfo: Teams")
-	maxPlayers := f.next(20, 4, "RoomInfo: MaxPlayers")
-	mapSize := f.next(21, 4, "RoomInfo: MapSize")
-	players := f.next(22, -1, "RoomInfo: PlayerInfos")
-	version := f.next(23, 4, "RoomInfo: GameVersion")
-	saved := f.next(24, 1, "RoomInfo: IsSaved")
-	guid := f.next(25, 16, "RoomInfo: GUID")
-	results := f.next(26, 1, "RoomInfo: SendResults")
-	options := f.next(27, -1, "RoomInfo: Options")
-	arena := f.next(28, 1, "RoomInfo: IsArena")
-	checksum := f.next(29, 4, "RoomInfo: HostChecksum")
-	adventure := f.next(30, 4, "RoomInfo: AdventureType")
-	tag := f.next(31, -1, "RoomInfo: MapDescTag")
-	r.MapGoal = clone(f.nextOrEmpty(32, "RoomInfo: MapGoal"))
-	r.ArenaMapName = clone(f.nextOrEmpty(33, "RoomInfo: ArenaMapName"))
-	i104 := f.next(37, 4, "RoomInfo: Int104")
-	i108 := f.next(38, 4, "RoomInfo: Int108")
-	speed := f.next(39, 4, "RoomInfo: CombatTurnSpeed")
-	f110 := f.next(40, 1, "RoomInfo: Flag110")
-	if f.err != nil {
-		return nil, f.err
-	}
 	var err error
-	r.GroupID, r.LobbySrvID = u32(groupID), u32(lobbyID)
-	if r.HostIP, err = readSockAddr(host, "RoomInfo"); err != nil {
+	if r.layout, err = readFields(buf, r, roomFields, "RoomInfo"); err != nil {
 		return nil, err
 	}
-	r.HostLogicInit = flag(hostInit)
-	r.IsPwdProtected, r.GhostMode, r.QuickCombat, r.FastCombatTurns = flag(pwd), flag(ghost), flag(quick), flag(fast)
-	r.TimeLimit, r.DifficultyID = u32(timeLimit), u32(difficulty)
-	if r.MapDesc, err = readNestedString(mapDesc); err != nil {
-		return nil, err
-	}
-	if r.Teams, err = readUints(teams); err != nil {
-		return nil, err
-	}
-	r.MaxPlayers, r.MapSize = u32(maxPlayers), u32(mapSize)
-	if r.PlayerInfos, err = readPlayerInfos(players); err != nil {
-		return nil, err
-	}
-	r.GameVersion = u32(version)
-	r.IsSaved = flag(saved)
-	copy(r.GUID[:], guid)
-	r.SendResultsWait = flag(results)
-	if r.Options, err = readOptions(options); err != nil {
-		return nil, err
-	}
-	r.IsArena = flag(arena)
-	r.HostChecksum, r.AdventureType = u32(checksum), u32(adventure)
-	if r.MapDescTag, err = readNestedString(tag); err != nil {
-		return nil, err
-	}
-	r.Int104, r.Int108, r.CombatTurnSpeed = u32(i104), u32(i108), u32(speed)
-	r.Flag110 = flag(f110)
 	return r, nil
 }
+
+// Differences describes how the room info's fields differ from 1.60's: the fields kept as they came, and
+// 1.60's fields it doesn't have. It is empty for a room info laid out like 1.60's.
+func (r *RoomInfo) Differences() string { return differences(r.layout, roomFields) }
 
 // readNestedString reads a string nested in an id 2 field (an empty field of any id is an empty string).
 func readNestedString(buf []byte) ([]byte, error) {
@@ -359,40 +351,7 @@ func readOptions(buf []byte) ([]Option, error) {
 // Serialize writes the room info as a group info buffer.
 func (r *RoomInfo) Serialize() []byte { return wrap(r.fields()) }
 
-func (r *RoomInfo) fields() []byte {
-	out := appendStream(nil, 2, le32(r.GroupID))
-	out = appendStream(out, 3, le32(r.LobbySrvID))
-	out = appendStream(out, 4, writeSockAddr(r.HostIP))
-	out = appendStream(out, 6, boolByte(r.HostLogicInit))
-	out = appendStream(out, 7, r.GroupName)
-	out = appendStream(out, 8, r.Password)
-	out = appendStream(out, 9, boolByte(r.IsPwdProtected))
-	out = appendStream(out, 10, boolByte(r.GhostMode))
-	out = appendStream(out, 11, boolByte(r.QuickCombat))
-	out = appendStream(out, 12, boolByte(r.FastCombatTurns))
-	out = appendStream(out, 13, le32(r.TimeLimit))
-	out = appendStream(out, 14, le32(r.DifficultyID))
-	out = appendStream(out, 15, appendStream(nil, 2, r.MapDesc))
-	out = appendStream(out, 19, writeUints(r.Teams))
-	out = appendStream(out, 20, le32(r.MaxPlayers))
-	out = appendStream(out, 21, le32(r.MapSize))
-	out = appendStream(out, 22, writePlayerInfos(r.PlayerInfos))
-	out = appendStream(out, 23, le32(r.GameVersion))
-	out = appendStream(out, 24, boolByte(r.IsSaved))
-	out = appendStream(out, 25, r.GUID[:])
-	out = appendStream(out, 26, boolByte(r.SendResultsWait))
-	out = appendStream(out, 27, writeOptions(r.Options))
-	out = appendStream(out, 28, boolByte(r.IsArena))
-	out = appendStream(out, 29, le32(r.HostChecksum))
-	out = appendStream(out, 30, le32(r.AdventureType))
-	out = appendStream(out, 31, appendStream(nil, 2, r.MapDescTag))
-	out = appendStream(out, 32, r.MapGoal)
-	out = appendStream(out, 33, r.ArenaMapName)
-	out = appendStream(out, 37, le32(r.Int104))
-	out = appendStream(out, 38, le32(r.Int108))
-	out = appendStream(out, 39, le32(r.CombatTurnSpeed))
-	return appendStream(out, 40, boolByte(r.Flag110))
-}
+func (r *RoomInfo) fields() []byte { return writeFields(r, r.layout, roomFields) }
 
 func writeUints(list []uint32) []byte {
 	out := appendStream(nil, 1, le32(uint32(len(list))))
