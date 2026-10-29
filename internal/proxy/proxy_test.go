@@ -2,6 +2,7 @@ package proxy_test
 
 import (
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -88,5 +89,26 @@ func TestProfileSizeLimit(t *testing.T) {
 	res, _ = other.Request(gsm.PROXY_HANDLER, dl.S("1026"), dl.S("1"), dl.L(dl.S("G"), dl.S("0"), dl.S("alice"), dl.S("0"), dl.S("PUBLIC"), dl.B([]byte("x")), dl.S("1")))
 	if res.Data.String() != "['1026', '1', ['39', ['0']]]" {
 		t.Fatalf("foreign write: %s", res.Data)
+	}
+}
+
+// The result names the request it answers: the game ignores the reply to its second query otherwise.
+func TestLadderRequestID(t *testing.T) {
+	s := testserver.Start(t, nil)
+	s.Accounts().Login("alice", "pw")
+	c, _ := gsclient.New("", s.Addr(env.PortProxyWM), gsm.PartyRouter)
+	defer c.Close()
+	for i, id := range []string{"1", "2", "17"} {
+		query := dl.L(dl.S(id), dl.S("HEROES_657d2c2ebadc6a1d"), dl.S("1"), dl.S("0"), dl.L(dl.S("1"), dl.Strs("alice", "1")), dl.L(dl.L(), dl.L(), dl.L()))
+		res, err := c.Request(gsm.PROXY_HANDLER, dl.S("1281"), dl.S(strconv.Itoa(i+1)), dl.L(dl.S("1"), query))
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, _ := res.Data.List(2)
+		answer, _ := result.List(1)
+		rows, _ := answer.List(1)
+		if got, _ := rows.Str(0); got != id {
+			t.Fatalf("request %s answered as %s: %s", id, got, res.Data)
+		}
 	}
 }

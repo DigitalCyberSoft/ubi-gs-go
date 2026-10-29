@@ -22,9 +22,6 @@ const (
 	CodeProfileSet  = "1026"
 )
 
-// MaxProfileSize is the largest profile blob stored.
-const MaxProfileSize = 64 * 1024
-
 // ErrModuleUnavailable is returned for module data this server has no service for; closing the
 // module's connection fails the request and the game carries on.
 var ErrModuleUnavailable = errors.New("no service for module request")
@@ -165,17 +162,21 @@ func failure(reason string) dl.Value { return dl.L(dl.S(gsm.ResultFail), dl.Strs
 func LadderKey(game, ladderID string) string { return game + "/" + ladderID }
 
 // ladderQuery answers ['1', [reqId, game, ladderId, '0', [type, args], [filters, sort, fields]]]:
-// success ['38', ['1', [first rank, row count, columns, rows]]] (parsed at 0x0042c6c0; the game reads
-// row 0 only), or failure ['39', [reason]], after which the game shows N/A.
+// success ['38', ['1', [reqId, '1', columns, rows]]] (parsed at 0x00432b50; the game reads row 0
+// only), or failure ['39', [reason]], after which the game shows N/A. The game takes the first field
+// of the result for the id of the request it answers (0x004325c0) and ignores a reply to a request
+// it isn't waiting for, so the Profile screen, whose query is never a session's first, waited forever
+// while that field was always 1.
 func (p *Proxy) ladderQuery(c *client, body dl.List) (dl.Value, error) {
 	request, ok := body.List(1)
 	if !ok {
 		return dl.Value{}, errors.New("malformed ladder query")
 	}
+	requestID, ok0 := request.Str(0)
 	game, ok1 := request.Str(1)
 	ladderID, ok2 := request.Str(2)
 	query, ok3 := request.List(4)
-	if !ok1 || !ok2 || !ok3 || len(query) != 2 {
+	if !ok0 || !ok1 || !ok2 || !ok3 || len(query) != 2 {
 		return dl.Value{}, errors.New("malformed ladder query")
 	}
 	queryType, _ := query[0].Str()
@@ -206,11 +207,12 @@ func (p *Proxy) ladderQuery(c *client, body dl.List) (dl.Value, error) {
 		columns[i] = dl.Strs(f, f)
 		row[i] = strconv.FormatInt(values[f], 10)
 	}
-	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.S("1"), dl.L(dl.S("1"), dl.S("1"), dl.L(columns...), dl.L(dl.Strs(row...))))), nil
+	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.S("1"), dl.L(dl.S(requestID), dl.S("1"), dl.L(columns...), dl.L(dl.Strs(row...))))), nil
 }
 
-// profileGet answers [game, '0', user, '0', 'PUBLIC'] with ['38', [blob, length]] (0x0042b2d0), or
-// ['39', ['1']] when nothing is stored.
+// profileGet answers [game, '0', user, '0', 'PUBLIC'] with ['38', [data, length]] (0x0042b2d0), or
+// ['39', ['1']] for no such player. A player who never saved gets the default profile: the failure
+// shows an error instead of the screen.
 func (p *Proxy) profileGet(c *client, body dl.List) (dl.Value, error) {
 	game, ok1 := body.Str(0)
 	user, ok2 := body.Str(2)
@@ -221,20 +223,22 @@ func (p *Proxy) profileGet(c *client, body dl.List) (dl.Value, error) {
 	if err != nil {
 		return dl.Value{}, err
 	}
-	var data []byte
-	if account != nil {
-		if data, err = p.Env.Accounts.Profile(*account, game); err != nil {
-			return dl.Value{}, err
-		}
+	if account == nil {
+		return failure("1"), nil
+	}
+	data, err := p.Env.Accounts.Profile(*account, game)
+	if err != nil {
+		return dl.Value{}, err
 	}
 	if data == nil {
-		return failure("1"), nil
+		data = DefaultProfile
 	}
 	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.B(data), dl.S(strconv.Itoa(len(data))))), nil
 }
 
-// profileSet stores [game, '0', own user, '0', 'PUBLIC', blob, length]: ['38', []] (0x0042b1b0), or
-// ['39', ['0']]. Only the player's own data is written.
+// profileSet stores [game, '0', own user, '0', 'PUBLIC', data, length]: ['38', []] (0x0042b1b0), or
+// ['39', ['0']]. Only the player's own data is written, and only a profile: other players' games load
+// it, so it is stored as this server writes it again.
 func (p *Proxy) profileSet(c *client, body dl.List) (dl.Value, error) {
 	game, ok1 := body.Str(0)
 	user, ok2 := body.Str(2)
@@ -249,6 +253,12 @@ func (p *Proxy) profileSet(c *client, body dl.List) (dl.Value, error) {
 	if account == nil || len(data) > MaxProfileSize {
 		return failure("0"), nil
 	}
+	profile, err := DecodeProfile(data)
+	if err != nil {
+		p.WMLog.Infof("refused the profile of %s: %v", account.Name, err)
+		return failure("0"), nil
+	}
+	data = profile.Encode()
 	if err := p.Env.Accounts.SetProfile(*account, game, data); err != nil {
 		return dl.Value{}, err
 	}
