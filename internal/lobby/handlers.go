@@ -367,6 +367,11 @@ func (l *Lobby) createRoom(c *client, req *gsm.Message, args dl.List) (*gsm.Mess
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
 		return nil, nil, bad("malformed CREATE_ROOM")
 	}
+	// one room waiting for its creator to join at a time
+	l.closeUnjoined(c)
+	if len(l.rooms) >= MaxRooms {
+		return nil, nil, bad("CREATE_ROOM refused: %d rooms are open", len(l.rooms))
+	}
 	id := l.nextRoomID
 	l.nextRoomID++
 	info, err := h5.DeserializeRoomInfo(groupInfo)
@@ -376,7 +381,7 @@ func (l *Lobby) createRoom(c *client, req *gsm.Message, args dl.List) (*gsm.Mess
 	r := &room{
 		id: id, parentID: parent, name: args[1], gameTitle: args[2], eventID: event, maxPlayers: maxPlayers,
 		maxVisitors: maxVisitors, groupInfo: groupInfo, password: args[7], gameVersion: args[8], gsVersion: args[9],
-		altInfo: args[10], master: c.username, ip: c.IP, config: LSMAllInfo, info: info,
+		altInfo: args[10], master: c.username, ip: c.IP, creator: c, config: LSMAllInfo, info: info,
 	}
 	if pw, ok := r.password.Str(); !ok || pw != "" {
 		r.config |= LSMPrivate

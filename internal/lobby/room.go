@@ -53,9 +53,11 @@ type room struct {
 	nbPlayers   int
 	nbVisitors  int
 	// ip is the host's address (its lobby connection)
-	ip     string
-	config int
-	info   *h5.RoomInfo
+	ip string
+	// creator is the connection that created the room; it joins the room next
+	creator *client
+	config  int
+	info    *h5.RoomInfo
 	// matchID is the rated match being played, 0 for none
 	matchID int
 }

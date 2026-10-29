@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -27,6 +28,9 @@ const MemberNameSize = 36
 
 // FirstRoomID is the id of the first room created.
 const FirstRoomID = 1000
+
+// MaxRooms caps the rooms open at once; a room holds up to a message's worth of its creator's data.
+const MaxRooms = 512
 
 // Placeholder stands in for an address a player must not see.
 const Placeholder = "0.0.0.0"
@@ -120,6 +124,7 @@ func (l *Lobby) Serve(conn *netsrv.Conn) {
 			}
 		}
 		l.leaveLobby(c)
+		l.closeUnjoined(c)
 		for _, o := range l.clients {
 			if o.IP == c.IP {
 				return
@@ -507,23 +512,38 @@ func (l *Lobby) leaveRoom(c *client) {
 	c.visitor = false
 	remaining := l.roomMembers(r.id)
 	if r.master == c.username || len(remaining) == 0 {
-		for i, o := range l.rooms {
-			if o == r {
-				l.rooms = append(l.rooms[:i], l.rooms[i+1:]...)
-				break
-			}
-		}
-		for _, m := range remaining {
-			m.roomID = 0
-		}
-		for _, m := range l.lobbyMembers(r.parentID) {
-			l.send(m, gsm.LobbyGroupRemove, dl.List{dl.S(strconv.Itoa(r.id))})
-		}
-		l.Log.Infof("room %d closed", r.id)
+		l.closeRoom(r, remaining)
 		return
 	}
 	l.sendMemberLeave(c, r.id, remaining)
 	l.sendRoomUpdate(r, nil)
+}
+
+// closeRoom removes a room; its remaining members are back in the lobby, which is told.
+func (l *Lobby) closeRoom(r *room, remaining []*client) {
+	for i, o := range l.rooms {
+		if o == r {
+			l.rooms = append(l.rooms[:i], l.rooms[i+1:]...)
+			break
+		}
+	}
+	for _, m := range remaining {
+		m.roomID = 0
+	}
+	for _, m := range l.lobbyMembers(r.parentID) {
+		l.send(m, gsm.LobbyGroupRemove, dl.List{dl.S(strconv.Itoa(r.id))})
+	}
+	l.Log.Infof("room %d closed", r.id)
+}
+
+// closeUnjoined closes the rooms the client created but isn't in. The game joins its room right after
+// creating it, and leaveRoom closes a room only for a member, so these would stay for good.
+func (l *Lobby) closeUnjoined(c *client) {
+	for _, r := range slices.Clone(l.rooms) {
+		if r.creator == c && r.id != c.roomID {
+			l.closeRoom(r, l.roomMembers(r.id))
+		}
+	}
 }
 
 // leaveLobby removes the client from its lobby (and room).
