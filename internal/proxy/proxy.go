@@ -165,17 +165,21 @@ func failure(reason string) dl.Value { return dl.L(dl.S(gsm.ResultFail), dl.Strs
 func LadderKey(game, ladderID string) string { return game + "/" + ladderID }
 
 // ladderQuery answers ['1', [reqId, game, ladderId, '0', [type, args], [filters, sort, fields]]]:
-// success ['38', ['1', [first rank, row count, columns, rows]]] (parsed at 0x0042c6c0; the game reads
-// row 0 only), or failure ['39', [reason]], after which the game shows N/A.
+// success ['38', ['1', [reqId, '1', columns, rows]]] (parsed at 0x00432b50; the game reads row 0
+// only), or failure ['39', [reason]], after which the game shows N/A. The game takes the first field
+// of the result for the id of the request it answers (0x004325c0) and ignores a reply to a request
+// it isn't waiting for, so the Profile screen, whose query is never a session's first, waited forever
+// while that field was always 1.
 func (p *Proxy) ladderQuery(c *client, body dl.List) (dl.Value, error) {
 	request, ok := body.List(1)
 	if !ok {
 		return dl.Value{}, errors.New("malformed ladder query")
 	}
+	requestID, ok0 := request.Str(0)
 	game, ok1 := request.Str(1)
 	ladderID, ok2 := request.Str(2)
 	query, ok3 := request.List(4)
-	if !ok1 || !ok2 || !ok3 || len(query) != 2 {
+	if !ok0 || !ok1 || !ok2 || !ok3 || len(query) != 2 {
 		return dl.Value{}, errors.New("malformed ladder query")
 	}
 	queryType, _ := query[0].Str()
@@ -206,7 +210,7 @@ func (p *Proxy) ladderQuery(c *client, body dl.List) (dl.Value, error) {
 		columns[i] = dl.Strs(f, f)
 		row[i] = strconv.FormatInt(values[f], 10)
 	}
-	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.S("1"), dl.L(dl.S("1"), dl.S("1"), dl.L(columns...), dl.L(dl.Strs(row...))))), nil
+	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.S("1"), dl.L(dl.S(requestID), dl.S("1"), dl.L(columns...), dl.L(dl.Strs(row...))))), nil
 }
 
 // profileGet answers [game, '0', user, '0', 'PUBLIC'] with ['38', [blob, length]] (0x0042b2d0), or
