@@ -22,7 +22,8 @@ var serversINI string
 var splinterCellINI string
 
 var (
-	heroesID = regexp.MustCompile(`^HEROES_[a-f0-9]{16}$`)
+	// a game id: Heroes V and its expansions send HEROES_ and 16 hex digits, one per game and version
+	gameID   = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 	ipLine   = regexp.MustCompile(`(?m)^(\w+IP\d+)=.*$`)
 	portLine = regexp.MustCompile(`(?m)^\w+Port\d+=\d+$`)
 )
@@ -98,8 +99,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var file, body string
 	switch {
-	case heroesID.MatchString(dp[0]):
-		// Heroes V and its expansions; the services' address is where this request arrived
+	case splinterCell[dp[0]]:
+		file, body = "GS.ini", splinterCellINI
+	case gameID.MatchString(dp[0]):
+		// any other game (Heroes V, its expansions, any version) gets the services; their address is
+		// where this request arrived
 		var extra []string
 		if h.ServerID != "" {
 			extra = append(extra, "ServerID="+h.ServerID)
@@ -108,11 +112,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			extra = append(extra, "LoginNonce="+h.Nonces.Issue(netsrv.HostIP(remoteAddr(r))))
 		}
 		file, body = "servers.ini", ServersINI(h.host(r), h.PortOffset, extra...)
-	case splinterCell[dp[0]]:
-		file, body = "GS.ini", splinterCellINI
 	default:
-		h.Log.Infof("unknown game id %q", dp[0])
-		http.Error(w, "Unknown game id", http.StatusBadRequest)
+		h.Log.Infof("malformed game id %q", dp[0])
+		http.Error(w, "Malformed game id", http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")

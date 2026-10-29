@@ -114,7 +114,7 @@ The game asks `http://gsconnect.ubisoft.com/gsinit.php?dp=<game id>` for the ser
   For Steam, use the launch options `http_proxy=http://203.0.113.10:80 %command%`.
 - **HommaRe** (the native port): its Multi Player menu has an "ubi-gs" entry that asks for the server's address, so no hosts file or proxy is needed.
 
-The game ids of Heroes V 1.60, Hammers of Fate 2.1 and Tribes of the East 3.1 are all accepted; only 1.60 has been played against the server.
+Any game id is accepted: Heroes V, Hammers of Fate and Tribes of the East (each version sends its own id) all get the services, and a room is passed on with whatever fields its game writes. Heroes V, Hammers of Fate 2.1 and Tribes of the East 3.1 have each been played against the server: creating, joining and starting a game, and passing turns.
 
 **Logging in:** Multi Player, ubi.com, any CD key, then any name and password. The first login creates the account.
 - The same name and password later gets the same account back, with its friends, rating and profile.
