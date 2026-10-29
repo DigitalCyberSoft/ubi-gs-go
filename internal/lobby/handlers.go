@@ -68,7 +68,8 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 	n, ok := req.Data.Int(0)
 	sub := gsm.LobbyMsg(n)
 	if !ok || !sub.Known() {
-		return nil, nil, bad("unknown lobby message %v", req.Data)
+		// not the payload: it is the client's, up to a message's size, and this runs under the lock
+		return nil, nil, bad("unknown lobby message %d (%d values, %d bytes)", n, len(req.Data), req.Header.Size)
 	}
 	args := groupArgs(req)
 	intArg := func(i int) (int, error) {
