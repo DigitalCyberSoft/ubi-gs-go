@@ -89,6 +89,31 @@ func LobbyGroup(req *Message) *Message {
 	return LobbyReply(req, dl.List{dl.S(ResultSuccess), dl.L(req.Data[0], dl.L(group[0]))})
 }
 
+// Lobby server error codes (GSLE_ERRORLOBBYSRV_*), the reason of a refused LOBBY_MSG request. The game
+// names each code (0x00b01ae0) and shows the text of that name from its MatchMakerErrors table; for a
+// code without one it shows "Operation failed. Error occured in ubi.com Service <service>. Error code
+// <reason>".
+const (
+	LobbyErrUnknown          = 0x00
+	LobbyErrGroupNotExist    = 0x01
+	LobbyErrNoMoreMembers    = 0x07 // "The game you're trying to enter is full."
+	LobbyErrNotMaster        = 0x0d
+	LobbyErrCreateNotAllowed = 0x18
+)
+
+// LobbyNameSize is the game's buffer for the room name in a CREATE_ROOM reply, terminator included
+// (0x00424d40).
+const LobbyNameSize = 36
+
+// LobbyFail is the refusal of a LOBBY_MSG request: [39, [subtype, [reason, echo]]]. The game reads the
+// reason first (0x00420a20), then echo: the group id the request was about for most requests (index 1
+// once the result isn't 38), the room name for CREATE_ROOM (0x00422500). A decoder that finds a field
+// missing drops the reply, and the game would wait for it for good.
+func LobbyFail(req *Message, reason int, echo string) *Message {
+	return LobbyReply(req, dl.List{dl.S(ResultFail),
+		dl.L(req.Data[0], dl.Strs(strconv.Itoa(reason), echo))})
+}
+
 // LobbyNotification is a LOBBY_MSG notification from the lobby server: [subtype, data].
 func LobbyNotification(sub LobbyMsg, data dl.List) *Message {
 	return Notification(LOBBY_MSG, PartyServer, PartyPlayer, dl.List{dl.S(strconv.Itoa(int(sub))), dl.L(data...)})

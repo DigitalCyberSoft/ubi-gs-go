@@ -177,8 +177,12 @@ func (l *Lobby) Serve(conn *netsrv.Conn) {
 		if err != nil {
 			var bad *badRequest
 			if errors.As(err, &bad) {
-				// an unknown or malformed request must not drop the player
+				// an unknown or malformed request must not drop the player, and a request the game waits
+				// for an answer to gets its refusal
 				l.Log.Warnf("unhandled request from %s: %v", c.name(), err)
+				if res := refusal(req, bad.reason); res != nil {
+					c.SendMsg(res)
+				}
 				return nil
 			}
 			return err
@@ -200,12 +204,55 @@ func (c *client) name() string {
 	return c.RemoteAddr().String()
 }
 
-// badRequest is a request the lobby ignores (logged, the connection stays).
-type badRequest struct{ msg string }
+// badRequest is a request the lobby refuses (logged, the connection stays), with the reason the game
+// is given when it waits for the answer.
+type badRequest struct {
+	msg    string
+	reason int
+}
 
 func (e *badRequest) Error() string { return e.msg }
 
-func bad(format string, args ...any) error { return &badRequest{fmt.Sprintf(format, args...)} }
+// bad refuses a malformed or unknown request.
+func bad(format string, args ...any) error {
+	return &badRequest{fmt.Sprintf(format, args...), gsm.LobbyErrUnknown}
+}
+
+// refuse refuses a request for a reason the game shows (a gsm.LobbyErr code).
+func refuse(reason int, format string, args ...any) error {
+	return &badRequest{fmt.Sprintf(format, args...), reason}
+}
+
+// answered are the LOBBY_MSG requests the game sends and then waits for the reply to, in a
+// CStateWait*Reply state (or, for LOGIN, with nothing else to go on). Each reply decoder reads
+// [result, [subtype, [reason, group id]]] for a refusal (CREATE_ROOM: [reason, room name]), shows the
+// reason and goes back to the lobby; without a reply the game stays on its waiting screen for good.
+// GROUP_INFO_GET is answered by a GROUP_INFO notification, and the rest are notifications.
+var answered = map[gsm.LobbyMsg]bool{
+	gsm.LobbyGroupLeave: true, gsm.LobbyCreateRoom: true, gsm.LobbyStartGame: true, gsm.LobbyStartMatch: true,
+	gsm.LobbyLogin: true, gsm.LobbyJoinLobby: true, gsm.LobbyJoinRoom: true, gsm.LobbySubmitMatch: true,
+	gsm.LobbyGroupConfigUpdateRes: true, gsm.LobbyGameReady: true, gsm.LobbySetPlayerInfo: true,
+	gsm.LobbyMatchFinish: true,
+}
+
+// refusal is the failure reply to a refused request the game waits for, or nil.
+func refusal(req *gsm.Message, reason int) *gsm.Message {
+	n, ok := req.Data.Int(0)
+	if req.Header.Type != gsm.LOBBY_MSG || !ok || !answered[gsm.LobbyMsg(n)] {
+		return nil
+	}
+	args := groupArgs(req)
+	echo, ok := args.Str(0)
+	if !ok {
+		echo = "0"
+	}
+	if gsm.LobbyMsg(n) == gsm.LobbyCreateRoom {
+		// copied into a fixed buffer
+		echo, _ = args.Str(1)
+		echo = gsm.Cap(echo, gsm.LobbyNameSize)
+	}
+	return gsm.LobbyFail(req, reason, echo)
+}
 
 func (l *Lobby) send(c *client, sub gsm.LobbyMsg, data dl.List) {
 	m := gsm.LobbyNotification(sub, data)

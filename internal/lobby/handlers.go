@@ -139,10 +139,10 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		}
 		r := l.findRoom(id)
 		if r == nil {
-			return nil, nil, bad("failed to find room %d on join", id)
+			return nil, nil, refuse(gsm.LobbyErrGroupNotExist, "JOIN_ROOM refused: no room %d", id)
 		}
 		if c.roomID != id && len(l.roomMembers(id)) >= MaxRoomMembers {
-			return nil, nil, bad("JOIN_ROOM refused: room %d is full", id)
+			return nil, nil, refuse(gsm.LobbyErrNoMoreMembers, "JOIN_ROOM refused: room %d is full", id)
 		}
 		res := gsm.LobbyReply(req, dl.List{dl.S(gsm.ResultSuccess), dl.L(dl.S(strconv.Itoa(int(sub))), dl.L(args[0]))})
 		if c.roomID != 0 {
@@ -210,11 +210,12 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		if !ok1 || !ok2 {
 			return nil, nil, bad("malformed GAME_READY")
 		}
-		res := gsm.LobbyGroup(req)
 		r := l.findRoom(id)
 		if r == nil {
-			return res, nil, nil
+			// a success would leave the game waiting for GAME_STARTED
+			return nil, nil, refuse(gsm.LobbyErrGroupNotExist, "GAME_READY refused: no room %d", id)
 		}
+		res := gsm.LobbyGroup(req)
 		l.noteGame(r)
 		l.Log.Infof("%s started the game of room %d", c.name(), id)
 		return res, func() {
@@ -234,11 +235,12 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		if err != nil {
 			return nil, nil, err
 		}
-		res := gsm.LobbyGroup(req)
 		r := l.findRoom(id)
 		if r == nil {
-			return res, nil, nil
+			// a success would leave the game waiting for MATCH_STARTED
+			return nil, nil, refuse(gsm.LobbyErrGroupNotExist, "START_MATCH refused: no room %d", id)
 		}
+		res := gsm.LobbyGroup(req)
 		m := &Match{ID: l.nextMatchID, Room: id, Values: map[string]dl.List{},
 			Accounts: map[string]*accounts.Account{}, Disputed: map[string]bool{}, reports: map[string]map[*client]dl.List{}}
 		m.Game, _ = r.gameTitle.Str()
@@ -376,14 +378,14 @@ func (l *Lobby) createRoom(c *client, req *gsm.Message, args dl.List) (*gsm.Mess
 	// one room waiting for its creator to join at a time
 	l.closeUnjoined(c)
 	if len(l.rooms) >= l.MaxRooms {
-		return nil, nil, bad("CREATE_ROOM refused: %d rooms are open", len(l.rooms))
+		return nil, nil, refuse(gsm.LobbyErrCreateNotAllowed, "CREATE_ROOM refused: %d rooms are open", len(l.rooms))
+	}
+	info, err := h5.DeserializeRoomInfo(groupInfo)
+	if err != nil {
+		return nil, nil, refuse(gsm.LobbyErrCreateNotAllowed, "CREATE_ROOM room info: %v", err)
 	}
 	id := l.nextRoomID
 	l.nextRoomID++
-	info, err := h5.DeserializeRoomInfo(groupInfo)
-	if err != nil {
-		return nil, nil, bad("CREATE_ROOM room info: %v", err)
-	}
 	r := &room{
 		id: id, parentID: parent, name: args[1], gameTitle: args[2], eventID: event, maxPlayers: maxPlayers,
 		maxVisitors: maxVisitors, groupInfo: groupInfo, password: args[7], gameVersion: args[8], gsVersion: args[9],
@@ -417,11 +419,11 @@ func (l *Lobby) configUpdate(c *client, req *gsm.Message, args dl.List) (*gsm.Me
 	}
 	r := l.findRoom(id)
 	if r == nil {
-		return nil, nil, bad("room %d not found on GROUP_CONFIG_UPDATE_RES", id)
+		return nil, nil, refuse(gsm.LobbyErrGroupNotExist, "room %d not found on GROUP_CONFIG_UPDATE_RES", id)
 	}
 	if r.master != c.username {
 		// only the host configures its room
-		return nil, nil, bad("%s is not the host of room %d", c.name(), id)
+		return nil, nil, refuse(gsm.LobbyErrNotMaster, "%s is not the host of room %d", c.name(), id)
 	}
 	idx := 2
 	next := func() (dl.Value, error) {

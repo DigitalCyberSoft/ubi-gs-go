@@ -162,10 +162,13 @@ func TestRoomFlow(t *testing.T) {
 		t.Fatalf("room info shows addresses outside the room: %+v", seen.PlayerInfos[0])
 	}
 	alice.msgs()
-	// a joiner that isn't the host can't change the room
+	// a joiner that isn't the host can't change the room: refused, not the host (13)
 	bob.lobby("31", dl.S(room), dl.S("8"), dl.S("4"))
-	if got := bob.msgs(); len(got) != 0 {
+	if got := bob.msgs(); len(got) != 1 || got[0].String() != "['39', ['31', ['13', '"+room+"']]]" {
 		t.Fatalf("a player changed someone else's room: %v", got)
+	}
+	if got := alice.msgs(); len(got) != 0 {
+		t.Fatalf("the room changed: %v", got)
 	}
 
 	// bob joins: GROUP_INFO with the room, the reply, then the members
@@ -325,7 +328,10 @@ func TestBadRequestsKeepThePlayer(t *testing.T) {
 	alice.lobby("24", dl.S("4242"))
 	alice.lobby("12", dl.S("1"))
 	alice.Send(gsm.STILLALIVE)
-	if got := alice.All(300 * time.Millisecond); len(got) != 1 || got[0].Header.Type != gsm.STILLALIVE {
+	// the requests the game waits for are refused, the unknown one isn't answered
+	got := alice.All(300 * time.Millisecond)
+	if len(got) != 3 || got[0].Data.String() != "['39', ['24', ['0', '4242']]]" ||
+		got[1].Data.String() != "['39', ['12', ['0', '']]]" || got[2].Header.Type != gsm.STILLALIVE {
 		t.Fatalf("after bad requests: %v", got)
 	}
 }
