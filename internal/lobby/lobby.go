@@ -32,6 +32,10 @@ const FirstRoomID = 1000
 // MaxRooms caps the rooms open at once; a room holds up to a message's worth of its creator's data.
 const MaxRooms = 512
 
+// MaxRoomMembers caps a room's players and visitors together (a Heroes V game has up to 8 players), so
+// a room and its chat channel can't gather a crowd of connections.
+const MaxRoomMembers = 16
+
 // Placeholder stands in for an address a player must not see.
 const Placeholder = "0.0.0.0"
 

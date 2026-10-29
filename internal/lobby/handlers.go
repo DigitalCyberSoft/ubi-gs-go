@@ -140,6 +140,9 @@ func (l *Lobby) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), err
 		if r == nil {
 			return nil, nil, bad("failed to find room %d on join", id)
 		}
+		if c.roomID != id && len(l.roomMembers(id)) >= MaxRoomMembers {
+			return nil, nil, bad("JOIN_ROOM refused: room %d is full", id)
+		}
 		res := gsm.LobbyReply(req, dl.List{dl.S(gsm.ResultSuccess), dl.L(dl.S(strconv.Itoa(int(sub))), dl.L(args[0]))})
 		if c.roomID != 0 {
 			l.leaveRoom(c)

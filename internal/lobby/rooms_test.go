@@ -1,9 +1,11 @@
 package lobby_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/dl"
+	"github.com/DigitalCyberSoft/ubi-gs-go/internal/lobby"
 )
 
 // createOnly sends CREATE_ROOM without joining the room, and returns its id.
@@ -49,5 +51,32 @@ func TestUnjoinedRoomsClosed(t *testing.T) {
 	alice.Close()
 	if got := removed(bob.msgs()); len(got) != 1 || got[0] != second {
 		t.Fatalf("after the creator left, removed %v, want [%s]", got, second)
+	}
+}
+
+// joinedRoom sends JOIN_ROOM and reports whether it was answered with success.
+func (p *player) joinedRoom(id string) bool {
+	p.msgs()
+	p.lobby("24", dl.S(id), dl.S(""), dl.S("448"), dl.S("0"), dl.S(gsVersion))
+	for _, m := range p.msgs() {
+		sub, _ := m.List(1)
+		if r, _ := m.Str(0); r == "38" && len(sub) > 0 && sub[0].String() == "'24'" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRoomFull(t *testing.T) {
+	s := start(t, nil)
+	host := join(t, s, "127.0.0.2", "host", "pw")
+	id := host.createRoom()
+	for i := 1; i < lobby.MaxRoomMembers; i++ {
+		p := join(t, s, fmt.Sprintf("127.0.0.%d", 10+i), fmt.Sprintf("p%d", i), "pw")
+		p.lobby("24", dl.S(id), dl.S(""), dl.S("448"), dl.S("0"), dl.S(gsVersion))
+	}
+	late := join(t, s, "127.0.0.9", "late", "pw")
+	if late.joinedRoom(id) {
+		t.Fatalf("joined a room with %d members already", lobby.MaxRoomMembers)
 	}
 }
