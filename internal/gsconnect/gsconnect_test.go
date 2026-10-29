@@ -26,8 +26,10 @@ func get(t *testing.T, h http.Handler, target string) (int, string, http.Header)
 
 func TestGameIDs(t *testing.T) {
 	h := &Handler{Log: logx.Discard()}
-	// Heroes V 1.60, Hammers of Fate 2.1, Tribes of the East 3.1
-	for _, dp := range []string{"HEROES_657d2c2ebadc6a1d", "HEROES_f4609f85d388479e", "HEROES_29988429c481f219"} {
+	// Heroes V 1.60, Hammers of Fate 2.1, Tribes of the East 3.1, and any other game: none is refused for
+	// being unknown
+	for _, dp := range []string{"HEROES_657d2c2ebadc6a1d", "HEROES_f4609f85d388479e", "HEROES_29988429c481f219",
+		"HEROES_0123456789abcdef", "NOPE"} {
 		code, body, hdr := get(t, h, "/gsinit.php?dp="+dp)
 		if code != 200 || !strings.Contains(body, "RouterPort0=7777") || !strings.Contains(body, "NATServerPort0=7781") {
 			t.Fatalf("%s: %d %q", dp, code, body)
@@ -43,7 +45,7 @@ func TestGameIDs(t *testing.T) {
 	if code, body, _ := get(t, h, "/gsinit.php?dp=SPLINTERCELL3PC&user=noname"); code != 200 || !strings.Contains(body, "ProxyPort0=7780") {
 		t.Fatalf("Splinter Cell: %d %q", code, body)
 	}
-	for target, want := range map[string]int{"/gsinit.php": 400, "/gsinit.php?dp=NOPE": 400, "/other.php?dp=HEROES_657d2c2ebadc6a1d": 400,
+	for target, want := range map[string]int{"/gsinit.php": 400, "/gsinit.php?dp=a%20b": 400, "/gsinit.php?dp=": 400, "/other.php?dp=HEROES_657d2c2ebadc6a1d": 400,
 		"/console": 400, "/": 404, "/a/b?dp=x": 404} {
 		if code, _, _ := get(t, h, target); code != want {
 			t.Errorf("%s: %d, want %d", target, code, want)
