@@ -212,6 +212,13 @@ func (l *Lobby) findRoom(id int) *room {
 	return nil
 }
 
+// Members is the number of players in a lobby, the ones in its rooms included (the lobby list shows it).
+func (l *Lobby) Members(lobbyID int) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.lobbyMembers(lobbyID))
+}
+
 // lobbyMembers are the clients in the lobby, the ones in its rooms included.
 func (l *Lobby) lobbyMembers(id int) []*client {
 	var out []*client
