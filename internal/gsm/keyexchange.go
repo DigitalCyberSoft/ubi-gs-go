@@ -4,10 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/crypto"
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/dl"
 )
+
+// serverKey is the RSA key of every connection's key exchange. A key per exchange cost about 30 ms of
+// CPU, asked for by anyone before logging in; the key only decrypts the game's key, which is checked
+// and dropped, while the session's Blowfish key goes out encrypted to the game's own key.
+var serverKey = sync.OnceValues(func() (*crypto.PrivateKey, error) { return crypto.GenerateKey(nil) })
 
 // Session is the per-connection key exchange state of a GS TCP connection.
 type Session struct {
@@ -34,7 +40,7 @@ func (s *Session) KeyExchange(req *Message) (*Message, error) {
 		if err != nil {
 			return nil, err
 		}
-		priv, err := crypto.GenerateKey(nil)
+		priv, err := serverKey()
 		if err != nil {
 			return nil, err
 		}
