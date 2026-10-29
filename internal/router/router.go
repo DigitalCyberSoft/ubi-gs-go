@@ -31,10 +31,11 @@ type Lobby struct {
 // Lobbies are the channels: Casual (standard), Ranked (rating) and 1v1 (duel).
 var Lobbies = []Lobby{{1, "Casual", 0}, {2, "Ranked", 1}, {3, "1v1", 2}}
 
-// list is the lobby's group data.
-func (l Lobby) list() dl.Value {
+// list is the lobby's group data, ending with the most members it takes and the members it has.
+func (l Lobby) list(capacity, members int) dl.Value {
 	return dl.L(dl.S("0"), dl.S(l.Name), dl.S(strconv.Itoa(l.ID)), dl.S("1"), dl.S("0"), dl.S("0"), dl.S("1"),
-		dl.S(""), dl.S(""), dl.S(""), dl.B([]byte{}), dl.S(strconv.Itoa(l.EventID)), dl.S("8"), dl.S("0"))
+		dl.S(""), dl.S(""), dl.S(""), dl.B([]byte{}), dl.S(strconv.Itoa(l.EventID)), dl.S(strconv.Itoa(capacity)),
+		dl.S(strconv.Itoa(members)))
 }
 
 // Router serves the router and its wait module, and knows who is logged in.
@@ -43,6 +44,11 @@ type Router struct {
 	Log   *logx.Logger // router
 	WMLog *logx.Logger // router wait module
 	Guard *guard.Guard
+	// LobbyMembers, if set, counts a lobby's players for the lobby list (the game shows them per channel).
+	LobbyMembers func(lobbyID int) int
+	// MaxLobbyMembers is the most players the lobby list says a lobby takes (8 if unset): as many players
+	// as that may read as a full channel, so it is the lobby service's real cap.
+	MaxLobbyMembers int
 
 	mu     sync.Mutex
 	logins map[*client]struct{} // router connections
@@ -398,9 +404,17 @@ func (r *Router) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, error) {
 		if _, ok := args.At(0); !ok {
 			return nil, errors.New("malformed CHANGE_REQUESTED_LOBBIES")
 		}
+		capacity := r.MaxLobbyMembers
+		if capacity <= 0 {
+			capacity = 8
+		}
 		lists := make([]dl.Value, len(Lobbies))
 		for i, l := range Lobbies {
-			lists[i] = l.list()
+			members := 0
+			if r.LobbyMembers != nil {
+				members = r.LobbyMembers(l.ID)
+			}
+			lists[i] = l.list(capacity, members)
 		}
 		data := dl.L(dl.S("1"), dl.S(strconv.Itoa(0x100)), dl.Strs("0"), dl.L(lists...))
 		return gsm.LobbyReply(req, dl.List{dl.S(strconv.Itoa(int(gsm.LobbyGroupInfo))), data}), nil

@@ -202,6 +202,7 @@ func Start(ctx context.Context, cfg Config, log *logx.Logger) (_ *Server, err er
 	px := &proxy.Proxy{Env: e, Log: log.With("proxy"), WMLog: log.With("proxy_wm")}
 	s.lobby = lobby.New(e, log.With("lobby"))
 	s.lobby.Results = &ratings.Ladder{Accounts: s.store, Log: log.With("ratings")}
+	rt.LobbyMembers, rt.MaxLobbyMembers = s.lobby.Members, cfg.MaxConns
 	chat := irc.New(log.With("irc"), cfg.SocketTimeout)
 	chat.Allowed = rt.LoggedIn
 	s.nat = &nat.Server{Log: log.With("nat"), Port: e.Ports.NAT, MaxClients: cfg.MaxNATClients, MaxPerIP: cfg.MaxPerIP}
