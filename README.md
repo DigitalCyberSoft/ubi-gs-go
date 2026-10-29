@@ -124,6 +124,8 @@ The game ids of Heroes V 1.60, Hammers of Fate 2.1 and Tribes of the East 3.1 ar
 
 **Playing:** in a room, every player marks themselves ready with the small arrow next to their own state icon; then the host's Start Game turns on. Rated games are played in the Ranked channel; their results update the ladder (Elo, starting at 1500) and the per-race statistics the Profile screen reads. The game reads its own rating for the player list when it logs in, so a new rating shows there after the next login.
 
+**Profile:** select a player in the lobby's player list, then Profile. The screen shows that player's ratings, games and races from the ladder, and their "Additional Information" text; a player who never saved one gets an empty profile. In your own profile, change the text and leave the screen (Back) to save it: the server keeps it per account, at most 255 characters, and anyone can view it.
+
 ## Privacy: player addresses and the relay
 
 Heroes V matches are peer-to-peer: the games send their game traffic (UDP, port 8888 by default) to each other.

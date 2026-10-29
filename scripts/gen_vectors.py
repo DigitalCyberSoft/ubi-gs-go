@@ -163,18 +163,22 @@ info.player_infos.append(entry)
 out['room_info_with_player'] = hx(ser.serialize_roominfo(info))
 
 # --- ladder and profile module data ---------------------------------------------
-import accounts, proxy_wm, ladder  # noqa: E402
+import accounts, proxy_wm, ladder, profiles  # noqa: E402
 accounts.configure(':memory:')
 alice = accounts.login('alice', 'pw')
 accounts.bind_session('alice', '10.0.0.3', alice)
 accounts.set_ladder_stats(alice, ladder.ladder_key('HEROES_657d2c2ebadc6a1d', '1'), {'RATING': 1612, 'WINS': 3})
 c = client.TcpClient((None, ('10.0.0.3', 50000)))
 module = []
+profile = profiles.encode(0x1003c, 'hello from ubigs')
 for code, seq, payload in [
   ('1281', '7', ['1', ['1', 'HEROES_657d2c2ebadc6a1d', '1', '0', ['1', ['alice', '1']], [[], [], []]]]),
   ('1281', '8', ['1', ['1', 'HEROES_657d2c2ebadc6a1d', '1', '0', ['1', ['nobody', '1']], [[], [], []]]]),
+  ('1281', '9', ['1', ['4', 'HEROES_657d2c2ebadc6a1d', '1', '0', ['1', ['alice', '1']], [[], [], []]]]),
   ('1025', '1', ['HEROES_657d2c2ebadc6a1d', '0', 'alice', '0', 'PUBLIC']),
-  ('1026', '2', ['HEROES_657d2c2ebadc6a1d', '0', 'alice', '0', 'PUBLIC', bytes(range(256)) * 3, '768']),
+  ('1025', '4', ['HEROES_657d2c2ebadc6a1d', '0', 'nobody', '0', 'PUBLIC']),
+  ('1026', '5', ['HEROES_657d2c2ebadc6a1d', '0', 'alice', '0', 'PUBLIC', bytes(range(256)) * 3, '768']),
+  ('1026', '2', ['HEROES_657d2c2ebadc6a1d', '0', 'alice', '0', 'PUBLIC', profile, str(len(profile))]),
   ('1025', '3', ['HEROES_657d2c2ebadc6a1d', '0', 'alice', '0', 'PUBLIC']),
 ]:
   m = message(gsm.MESSAGE_TYPE.PROXY_HANDLER, [code, seq, payload])

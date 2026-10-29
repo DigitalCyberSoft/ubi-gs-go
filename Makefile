@@ -32,7 +32,7 @@ vet:
 FUZZTIME ?= 15s
 fuzz:
 	@for t in dl:FuzzDecode gsm:FuzzDecode crypto:FuzzXOR crypto:FuzzBlowfishDecrypt h5:FuzzRoomInfo h5:FuzzPlayerInfo \
-		srp:FuzzParse nat:FuzzPacket cdkey:FuzzParse irc:FuzzSanitizeChat; do \
+		srp:FuzzParse nat:FuzzPacket cdkey:FuzzParse irc:FuzzSanitizeChat proxy:FuzzDecodeProfile; do \
 		pkg=$${t%%:*}; fn=$${t#*:}; \
 		$(GO) test ./internal/$$pkg -run '^$$' -fuzz "^$$fn$$" -fuzztime $(FUZZTIME) || exit 1; \
 	done

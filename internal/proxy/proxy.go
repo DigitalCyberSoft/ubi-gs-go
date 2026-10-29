@@ -22,9 +22,6 @@ const (
 	CodeProfileSet  = "1026"
 )
 
-// MaxProfileSize is the largest profile blob stored.
-const MaxProfileSize = 64 * 1024
-
 // ErrModuleUnavailable is returned for module data this server has no service for; closing the
 // module's connection fails the request and the game carries on.
 var ErrModuleUnavailable = errors.New("no service for module request")
@@ -213,8 +210,9 @@ func (p *Proxy) ladderQuery(c *client, body dl.List) (dl.Value, error) {
 	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.S("1"), dl.L(dl.S(requestID), dl.S("1"), dl.L(columns...), dl.L(dl.Strs(row...))))), nil
 }
 
-// profileGet answers [game, '0', user, '0', 'PUBLIC'] with ['38', [blob, length]] (0x0042b2d0), or
-// ['39', ['1']] when nothing is stored.
+// profileGet answers [game, '0', user, '0', 'PUBLIC'] with ['38', [data, length]] (0x0042b2d0), or
+// ['39', ['1']] for no such player. A player who never saved gets the default profile: the failure
+// shows an error instead of the screen.
 func (p *Proxy) profileGet(c *client, body dl.List) (dl.Value, error) {
 	game, ok1 := body.Str(0)
 	user, ok2 := body.Str(2)
@@ -225,20 +223,22 @@ func (p *Proxy) profileGet(c *client, body dl.List) (dl.Value, error) {
 	if err != nil {
 		return dl.Value{}, err
 	}
-	var data []byte
-	if account != nil {
-		if data, err = p.Env.Accounts.Profile(*account, game); err != nil {
-			return dl.Value{}, err
-		}
+	if account == nil {
+		return failure("1"), nil
+	}
+	data, err := p.Env.Accounts.Profile(*account, game)
+	if err != nil {
+		return dl.Value{}, err
 	}
 	if data == nil {
-		return failure("1"), nil
+		data = DefaultProfile
 	}
 	return dl.L(dl.S(gsm.ResultSuccess), dl.L(dl.B(data), dl.S(strconv.Itoa(len(data))))), nil
 }
 
-// profileSet stores [game, '0', own user, '0', 'PUBLIC', blob, length]: ['38', []] (0x0042b1b0), or
-// ['39', ['0']]. Only the player's own data is written.
+// profileSet stores [game, '0', own user, '0', 'PUBLIC', data, length]: ['38', []] (0x0042b1b0), or
+// ['39', ['0']]. Only the player's own data is written, and only a profile: other players' games load
+// it, so it is stored as this server writes it again.
 func (p *Proxy) profileSet(c *client, body dl.List) (dl.Value, error) {
 	game, ok1 := body.Str(0)
 	user, ok2 := body.Str(2)
@@ -253,6 +253,12 @@ func (p *Proxy) profileSet(c *client, body dl.List) (dl.Value, error) {
 	if account == nil || len(data) > MaxProfileSize {
 		return failure("0"), nil
 	}
+	profile, err := DecodeProfile(data)
+	if err != nil {
+		p.WMLog.Infof("refused the profile of %s: %v", account.Name, err)
+		return failure("0"), nil
+	}
+	data = profile.Encode()
 	if err := p.Env.Accounts.SetProfile(*account, game, data); err != nil {
 		return dl.Value{}, err
 	}
