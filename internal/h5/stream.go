@@ -123,36 +123,8 @@ func (f *fields) next(id byte, size int, name string) []byte {
 	return s.Data
 }
 
-// nextOrEmpty reads a field that must have the id unless it is empty (the reference reader accepts an
-// empty field of any id there).
-func (f *fields) nextOrEmpty(id byte, name string) []byte {
-	if f.err != nil {
-		return nil
-	}
-	s, n, err := readStream(f.buf)
-	if err != nil {
-		f.err = fmt.Errorf("%s (%d): %w", name, id, err)
-		return nil
-	}
-	if len(s.Data) > 0 && s.ID != id {
-		f.err = invalid("missing/invalid field - %s (%d)", name, id)
-		return nil
-	}
-	f.buf = f.buf[n:]
-	return s.Data
-}
-
 func u32(b []byte) uint32 { return binary.LittleEndian.Uint32(b) }
 
 func le32(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
-
-func flag(b []byte) bool { return len(b) > 0 && b[0] != 0 }
-
-func boolByte(v bool) []byte {
-	if v {
-		return []byte{1}
-	}
-	return []byte{0}
-}
 
 func clone(b []byte) []byte { return append([]byte(nil), b...) }
