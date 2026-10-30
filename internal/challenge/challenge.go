@@ -3,9 +3,10 @@
 // servers.ini with an HMAC. The original game keeps sending plain passwords, which work as before.
 //
 // Password formats in the router's LOGIN:
-//   - RegisterPrefix + token: log in with the token as the password (creating the account, or
-//     upgrading a plain account whose password was the token) and store the verifier
-//     V = HMAC-SHA256(token, VerifierLabel);
+//   - RegisterPrefix + token: log in with the token as the password and store the verifier
+//     V = HMAC-SHA256(token, VerifierLabel). A new name becomes a token account; a taken name logs in
+//     only if it is a token account registered with this token, and is refused as a wrong password
+//     otherwise;
 //   - ChallengePrefix + base64url(HMAC-SHA256(V, nonce)[:MACLen]): valid once, for a nonce issued to the
 //     same address that hasn't expired;
 //   - anything else: a plain password.

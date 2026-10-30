@@ -230,6 +230,10 @@ func TestRoomFlow(t *testing.T) {
 func TestOwnNameIsTyped(t *testing.T) {
 	s := start(t, nil)
 	join(t, s, "127.0.0.2", "alice", "one")
+	// an alice-1 from before wrong passwords were refused, logging in as alice
+	if _, err := s.Accounts().Login("alice-1", "two"); err != nil {
+		t.Fatal(err)
+	}
 	second := join(t, s, "127.0.0.3", "alice", "two")
 	members := notifs(second.msgs(), "53")[0].String()
 	// the game knows itself by the typed name; others see the account name

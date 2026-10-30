@@ -77,11 +77,11 @@ func TestLoginRate(t *testing.T) {
 func TestBackoffAfterMisses(t *testing.T) {
 	g, c := newGuard(t, Config{MaxBackoff: time.Minute})
 	g.Login("10.0.0.1", "alice", "secret")
-	// guessing alice's password: the first miss is free (a new player picking a taken name)
-	if a, err := g.Login("10.0.0.9", "alice", "guess1"); err != nil || a.Name != "alice-1" {
+	// guessing alice's password: each guess is refused, the first miss is free (a typo)
+	if a, err := g.Login("10.0.0.9", "alice", "guess1"); err != accounts.ErrInvalidPassword {
 		t.Fatalf("%v %v", a, err)
 	}
-	if _, err := g.Login("10.0.0.9", "alice", "guess2"); err != nil {
+	if _, err := g.Login("10.0.0.9", "alice", "guess2"); err != accounts.ErrInvalidPassword {
 		t.Fatal(err)
 	}
 	if _, err := g.Login("10.0.0.9", "alice", "guess3"); err != ErrSlowDown {
@@ -92,12 +92,36 @@ func TestBackoffAfterMisses(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.t = c.t.Add(3 * time.Second)
-	if _, err := g.Login("10.0.0.9", "alice", "guess3"); err != nil {
+	if _, err := g.Login("10.0.0.9", "alice", "guess3"); err != accounts.ErrInvalidPassword {
 		t.Fatalf("after the back-off: %v", err)
 	}
-	// alice-1 logging in again is not a miss
-	if a, err := g.Login("10.0.0.9", "alice", "guess1"); err != ErrSlowDown && (err != nil || a.Name != "alice-1") {
-		t.Fatalf("%v %v", a, err)
+	// the third miss doubles the wait
+	c.t = c.t.Add(3 * time.Second)
+	if _, err := g.Login("10.0.0.9", "alice", "guess4"); err != ErrSlowDown {
+		t.Fatalf("no longer back-off: %v", err)
+	}
+	if a, _ := g.Accounts.Find("alice-1"); a != nil {
+		t.Fatal("a guess created alice-1")
+	}
+}
+
+func TestWrongPasswordsCountPerMinute(t *testing.T) {
+	g, c := newGuard(t, Config{LoginsPerIPMinute: 3, MaxBackoff: time.Second})
+	g.Login("10.0.0.1", "alice", "secret")
+	for i, wait := range []time.Duration{0, 2 * time.Second, 2 * time.Second} {
+		c.t = c.t.Add(wait) // past each back-off
+		if _, err := g.Login("10.0.0.9", "alice", "guess"); err != accounts.ErrInvalidPassword {
+			t.Fatalf("guess %d: %v", i, err)
+		}
+	}
+	// the fourth attempt within the minute, past the back-off: the per-minute cap
+	c.t = c.t.Add(2 * time.Second)
+	if _, err := g.Login("10.0.0.9", "alice", "secret"); err != ErrSlowDown {
+		t.Fatalf("no cap: %v", err)
+	}
+	c.t = c.t.Add(time.Minute)
+	if _, err := g.Login("10.0.0.9", "alice", "secret"); err != nil {
+		t.Fatalf("after the minute: %v", err)
 	}
 }
 
@@ -188,9 +212,63 @@ func TestChallengeLogin(t *testing.T) {
 	if again, err := g.Login("10.0.0.5", "alice", challenge.RegisterPrefix+token); err != nil || again != a {
 		t.Fatalf("re-registration: %v %v", again, err)
 	}
-	// another token is someone else: alice-1
-	if b, err := g.Login("10.0.0.6", "alice", challenge.RegisterPrefix+"ponmlkjihgfedcba"); err != nil || b.Name != "alice-1" {
+	// another token is a wrong password
+	if b, err := g.Login("10.0.0.6", "alice", challenge.RegisterPrefix+"ponmlkjihgfedcba"); err != accounts.ErrInvalidPassword {
 		t.Fatalf("another token: %v %v", b, err)
+	}
+	if b, _ := g.Accounts.Find("alice-1"); b != nil {
+		t.Fatal("alice-1 created")
+	}
+}
+
+func TestWrongPasswordRefused(t *testing.T) {
+	g, _ := challengeGuard(t)
+	ok := func(ip, name, password string, want string) accounts.Account {
+		t.Helper()
+		a, err := g.Login(ip, name, password)
+		if err != nil || a.Name != want {
+			t.Fatalf("Login(%q, %q) = %v, %v; want %s", name, password, a, err, want)
+		}
+		return a
+	}
+	wrong := func(ip, name, password string) {
+		t.Helper()
+		if a, err := g.Login(ip, name, password); err != accounts.ErrInvalidPassword {
+			t.Fatalf("Login(%q, %q) = %v, %v; want INVALID_PASSWORD", name, password, a, err)
+		}
+	}
+	// plain passwords (the original game): a new name registers, the right password logs in, a wrong
+	// one is refused
+	plain := ok("10.0.0.1", "testhifip", "right", "testhifip")
+	if again := ok("10.0.0.1", "testhifip", "right", "testhifip"); again != plain {
+		t.Fatal("another account")
+	}
+	wrong("10.0.0.2", "testhifip", "wrong")
+	wrong("10.0.0.3", "TESTHIFIP", "wrong2")
+	// HommaRe tokens: ~r: for a new name registers, ~r: with the same token logs in, another token is
+	// refused, and a ~1: answer that doesn't match is refused
+	tok := ok("10.0.0.4", "homma", challenge.RegisterPrefix+token, "homma")
+	if again := ok("10.0.0.5", "homma", challenge.RegisterPrefix+token, "homma"); again != tok {
+		t.Fatal("another account")
+	}
+	wrong("10.0.0.6", "homma", challenge.RegisterPrefix+"ponmlkjihgfedcba")
+	nonce := g.Nonces.Issue("10.0.0.7")
+	wrong("10.0.0.7", "homma", challenge.Response(challenge.Verifier("ponmlkjihgfedcba"), nonce))
+	nonce = g.Nonces.Issue("10.0.0.8")
+	if a := ok("10.0.0.8", "homma", challenge.Response(challenge.Verifier(token), nonce), "homma"); a != tok {
+		t.Fatal("another account")
+	}
+	// the kinds don't open each other
+	wrong("10.0.0.9", "testhifip", challenge.RegisterPrefix+"right")
+	wrong("10.0.0.10", "homma", token)
+	// no name-k anywhere
+	if n, _ := g.Accounts.Count(); n != 2 {
+		t.Fatalf("%d accounts, want 2", n)
+	}
+	for _, n := range []string{"testhifip", "homma"} {
+		if a, _ := g.Accounts.Find(accounts.FamilyName(n, 1)); a != nil {
+			t.Fatalf("%s created", a.Name)
+		}
 	}
 }
 
@@ -201,23 +279,27 @@ func TestPlainAndTokenNeverMix(t *testing.T) {
 	if plain.Name != "bob" {
 		t.Fatal(plain)
 	}
-	// a HommaRe player registering the same name, even with the same string: a collision, bob-1
-	tok, err := g.Login("10.0.0.2", "bob", challenge.RegisterPrefix+token)
-	if err != nil || tok.Name != "bob-1" {
+	// a HommaRe player registering the same name, even with the same string: a wrong password
+	if tok, err := g.Login("10.0.0.2", "bob", challenge.RegisterPrefix+token); err != accounts.ErrInvalidPassword {
 		t.Fatalf("token on a plain name: %v %v", tok, err)
 	}
-	// and the plain account still logs in plainly, never as the token account
+	// and the plain account still logs in plainly
 	if again, err := g.Login("10.0.0.1", "bob", token); err != nil || again != plain {
 		t.Fatalf("plain login: %v %v", again, err)
 	}
-	// a challenge login finds bob-1 through the name's family
-	n := g.Nonces.Issue("10.0.0.2")
-	if got, err := g.Login("10.0.0.2", "bob", challenge.Response(challenge.Verifier(token), n)); err != nil || got != tok {
+	// a token account bob-1 from before (here registered under its own name): a challenge login finds it
+	// through the name's family
+	tok, err := g.Login("10.0.0.3", "bob-1", challenge.RegisterPrefix+token)
+	if err != nil || tok.Name != "bob-1" {
+		t.Fatalf("bob-1: %v %v", tok, err)
+	}
+	n := g.Nonces.Issue("10.0.0.3")
+	if got, err := g.Login("10.0.0.3", "bob", challenge.Response(challenge.Verifier(token), n)); err != nil || got != tok {
 		t.Fatalf("challenge for bob-1: %v %v", got, err)
 	}
 	// a plain password equal to a token account's token doesn't open it
-	g.Login("10.0.0.3", "carol", challenge.RegisterPrefix+token)
-	if c, _ := g.Login("10.0.0.3", "carol", token); c.Name != "carol-1" {
-		t.Fatalf("plain login into a token account: %v", c)
+	g.Login("10.0.0.4", "carol", challenge.RegisterPrefix+token)
+	if c, err := g.Login("10.0.0.4", "carol", token); err != accounts.ErrInvalidPassword {
+		t.Fatalf("plain login into a token account: %v %v", c, err)
 	}
 }

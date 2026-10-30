@@ -124,7 +124,7 @@ for msg_id, t in [('1', 1), ('2', 2), ('3', 3), ('4', 4)]:
   res = cdkm.CDKeyMessage(udp.recv(2048))
   check(res.req_type.value == t and res.dl.lst[3][0] == '38', f'CD key {res.req_type.name} succeeds')
 
-# --- router: key exchange, encrypted LOGIN, alice and alice-1 ------------------------------
+# --- router: key exchange, encrypted LOGIN, a wrong password, alice and alice-1 -----------
 def router_login(src, name, password):
   r = GS(src, 'router')
   r.key_exchange()
@@ -134,8 +134,13 @@ def router_login(src, name, password):
 
 alice_r, res = router_login('127.0.0.2', 'alice', 'one')
 check(res.header.type == gsm.MESSAGE_TYPE.GSSUCCESS and res.dl.lst == [b'f'], 'alice logs in (RSA key exchange, Blowfish LOGIN)')
+_, res = router_login('127.0.0.3', 'alice', 'two')
+check(res.header.type == gsm.MESSAGE_TYPE.GSFAIL and res.dl.lst == [b'f', [(15).to_bytes(4, 'little')]],
+  'alice with another password is refused with INVALID_PASSWORD')
+_, res = router_login('127.0.0.3', 'alice-1', 'two')
+check(res.header.type == gsm.MESSAGE_TYPE.GSSUCCESS, 'alice-1, a new name, logs in')
 second_r, res = router_login('127.0.0.3', 'alice', 'two')
-check(res.header.type == gsm.MESSAGE_TYPE.GSSUCCESS, 'a second alice with another password logs in')
+check(res.header.type == gsm.MESSAGE_TYPE.GSSUCCESS, 'alice with alice-1\'s password logs in to alice-1')
 bob_r, res = router_login('127.0.0.4', 'bob', 'pw')
 _, res = router_login('127.0.0.5', 'a b', 'pw')
 check(res.header.type == gsm.MESSAGE_TYPE.GSFAIL and res.dl.lst == [b'f', [(2).to_bytes(4, 'little')]], 'a malformed name is refused with USERNAME_MALFORMED')
