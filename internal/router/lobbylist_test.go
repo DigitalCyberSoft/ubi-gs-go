@@ -12,6 +12,9 @@ import (
 	"github.com/DigitalCyberSoft/ubi-gs-go/internal/testserver"
 )
 
+// toe is the game id of Tribes of the East 3.1.
+const toe = "HEROES_29988429c481f219"
+
 // lobbyList is the wait module's lobby list as "id:max/members" entries.
 func lobbyList(t *testing.T, wm *gsclient.Client) string {
 	t.Helper()
@@ -19,7 +22,16 @@ func lobbyList(t *testing.T, wm *gsclient.Client) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args, _ := res.Data.List(1)
+	return lobbies(t, res)
+}
+
+// lobbies is a lobby list (a GROUP_INFO) as "id:max/members" entries.
+func lobbies(t *testing.T, m *gsm.Message) string {
+	t.Helper()
+	if sub, _ := m.Data.Str(0); m.Header.Type != gsm.LOBBY_MSG || sub != "53" {
+		t.Fatalf("not a lobby list: %s", m)
+	}
+	args, _ := m.Data.List(1)
 	lists, _ := args.List(3)
 	out := ""
 	for _, v := range lists {
@@ -30,6 +42,28 @@ func lobbyList(t *testing.T, wm *gsclient.Client) string {
 		out += fmt.Sprintf("%s:%s/%s ", id, capacity, members)
 	}
 	return out
+}
+
+// Hammers of Fate and Tribes of the East never ask for the lobby list (CHANGE_REQUESTED_LOBBIES), as
+// 1.60 does: after the lobby login they wait for it, and list no lobby until it comes.
+func TestLobbyLoginSendsTheLobbyList(t *testing.T) {
+	s := testserver.Start(t, nil)
+	wm := dial(t, s, "", env.PortRouterWM)
+	res, err := wm.Request(gsm.LOBBY_MSG, dl.S("21"), dl.L(dl.S(toe)))
+	if err != nil || res.Data.String() != "['38', ['21']]" {
+		t.Fatalf("lobby LOGIN: %v %v", res, err)
+	}
+	list, err := wm.Recv(2 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lobbies(t, list); got != "1:512/0 2:512/0 3:512/0 " || list.Header.Sender != gsm.PartyRouter {
+		t.Fatalf("after the lobby LOGIN: %s, from %s", got, list.Header.Sender)
+	}
+	// asking still gets it
+	if got := lobbyList(t, wm); got != "1:512/0 2:512/0 3:512/0 " {
+		t.Fatalf("lobby list %q", got)
+	}
 }
 
 // The lobby list shows how many players each lobby has (the game shows it per channel), its rooms
