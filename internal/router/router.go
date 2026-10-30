@@ -331,8 +331,7 @@ func (r *Router) handleWM(c *client, req *gsm.Message) (*gsm.Message, func(), er
 		res, err := r.proxyHandler(c, req)
 		return res, nil, err
 	case gsm.LOBBY_MSG:
-		res, err := r.lobbyMsg(c, req)
-		return res, nil, err
+		return r.lobbyMsg(c, req)
 	case gsm.KEY_EXCHANGE:
 		res, err := c.Session.KeyExchange(req)
 		return res, nil, err
@@ -380,46 +379,57 @@ func (r *Router) proxyHandler(c *client, req *gsm.Message) (*gsm.Message, error)
 	return nil, fmt.Errorf("unknown PROXY_HANDLER subtype %q", sub)
 }
 
-// lobbyMsg answers the lobby messages the game sends through the router.
-func (r *Router) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, error) {
+// lobbyMsg answers the lobby messages the game sends through the router; after runs once the reply is
+// sent.
+func (r *Router) lobbyMsg(c *client, req *gsm.Message) (*gsm.Message, func(), error) {
 	n, ok := req.Data.Int(0)
 	sub := gsm.LobbyMsg(n)
 	if !ok || !sub.Known() {
-		return nil, errors.New("unknown lobby message subtype")
+		return nil, nil, errors.New("unknown lobby message subtype")
 	}
 	args, _ := req.Data.List(1)
 	switch sub {
 	case gsm.LobbyJoinServer:
 		id, ok := args.At(0)
 		if !ok {
-			return nil, errors.New("malformed JOIN_SERVER")
+			return nil, nil, errors.New("malformed JOIN_SERVER")
 		}
-		return JoinServer(req, id, r.Env.Advertise(c.Conn), r.Env.Ports.Lobby), nil
+		return JoinServer(req, id, r.Env.Advertise(c.Conn), r.Env.Ports.Lobby), nil, nil
 	case gsm.LobbyLogin:
 		if _, ok := args.At(0); !ok {
-			return nil, errors.New("malformed lobby LOGIN")
+			return nil, nil, errors.New("malformed lobby LOGIN")
 		}
-		return gsm.LobbyReply(req, dl.List{dl.S(gsm.ResultSuccess), dl.Strs(strconv.Itoa(int(gsm.LobbyLogin)))}), nil
+		// 1.60 asks for the lobby list next (CHANGE_REQUESTED_LOBBIES). Hammers of Fate and Tribes of
+		// the East never ask: they wait for the list after the login, and show no lobby until it comes.
+		res := gsm.LobbyReply(req, dl.List{dl.S(gsm.ResultSuccess), dl.Strs(strconv.Itoa(int(gsm.LobbyLogin)))})
+		return res, func() {
+			r.send(c, gsm.Notification(gsm.LOBBY_MSG, gsm.PartyRouter, gsm.PartyPlayer, r.lobbyList()))
+		}, nil
 	case gsm.LobbyChangeRequestedLobbies:
 		if _, ok := args.At(0); !ok {
-			return nil, errors.New("malformed CHANGE_REQUESTED_LOBBIES")
+			return nil, nil, errors.New("malformed CHANGE_REQUESTED_LOBBIES")
 		}
-		capacity := r.MaxLobbyMembers
-		if capacity <= 0 {
-			capacity = 8
-		}
-		lists := make([]dl.Value, len(Lobbies))
-		for i, l := range Lobbies {
-			members := 0
-			if r.LobbyMembers != nil {
-				members = r.LobbyMembers(l.ID)
-			}
-			lists[i] = l.list(capacity, members)
-		}
-		data := dl.L(dl.S("1"), dl.S(strconv.Itoa(0x100)), dl.Strs("0"), dl.L(lists...))
-		return gsm.LobbyReply(req, dl.List{dl.S(strconv.Itoa(int(gsm.LobbyGroupInfo))), data}), nil
+		return gsm.LobbyReply(req, r.lobbyList()), nil, nil
 	}
-	return nil, fmt.Errorf("no request handler for %s lobby message", sub)
+	return nil, nil, fmt.Errorf("no request handler for %s lobby message", sub)
+}
+
+// lobbyList is the GROUP_INFO of the lobbies: ['53', ['1', 0x100, ['0'], [lobby, ...]]].
+func (r *Router) lobbyList() dl.List {
+	capacity := r.MaxLobbyMembers
+	if capacity <= 0 {
+		capacity = 8
+	}
+	lists := make([]dl.Value, len(Lobbies))
+	for i, l := range Lobbies {
+		members := 0
+		if r.LobbyMembers != nil {
+			members = r.LobbyMembers(l.ID)
+		}
+		lists[i] = l.list(capacity, members)
+	}
+	data := dl.L(dl.S("1"), dl.S(strconv.Itoa(0x100)), dl.Strs("0"), dl.L(lists...))
+	return dl.List{dl.S(strconv.Itoa(int(gsm.LobbyGroupInfo))), data}
 }
 
 // JoinServer answers JOIN_SERVER: ['38', ['3', [server id, ip, port]]].

@@ -207,6 +207,14 @@ func TestReplyVectors(t *testing.T) {
 		if got != exp || res.Header.Type != want.Header.Type || res.Header.Sender != want.Header.Sender {
 			t.Errorf("%s: %s %s, want %s %s", v.Name, res.Header.Type, got, want.Header.Type, exp)
 		}
+		if v.Name == "lobby_login" {
+			// then the lobby list (TestLobbyLoginSendsTheLobbyList)
+			list, err := wm.Recv(2 * time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lobbies(t, list)
+		}
 	}
 	// the module-ready notice gets no reply (an echo would block the game's proxy messages)
 	wm.Send(gsm.PROXY_HANDLER, dl.L(dl.S("3"), dl.S("1")))
