@@ -36,17 +36,44 @@ func name(t *testing.T, s *Store, n, pw string) string {
 	return a.Name
 }
 
-func TestFirstLoginCreatesAndSuffixes(t *testing.T) {
+// refused checks that a login is refused as a wrong password.
+func refused(t *testing.T, s *Store, n, pw string) {
+	t.Helper()
+	if a, err := s.Login(n, pw); err != ErrInvalidPassword {
+		t.Fatalf("Login(%q, %q) = %v, %v; want INVALID_PASSWORD", n, pw, a, err)
+	}
+}
+
+// noFamily checks that no name-k account exists for any of the names.
+func noFamily(t *testing.T, s *Store, names ...string) {
+	t.Helper()
+	for _, n := range names {
+		for k := 1; k <= 3; k++ {
+			if a, _ := s.Find(FamilyName(n, k)); a != nil {
+				t.Fatalf("%s was created", a.Name)
+			}
+		}
+	}
+}
+
+func TestFirstLoginCreatesWrongPasswordRefused(t *testing.T) {
 	s, path := open(t)
+	// a new name registers on its first login, and the same password logs in again
 	if name(t, s, "alice", "one") != "alice" || name(t, s, "alice", "one") != "alice" {
 		t.Fatal("first login")
 	}
-	if name(t, s, "alice", "two") != "alice-1" || name(t, s, "alice", "three") != "alice-2" {
-		t.Fatal("suffixes")
-	}
-	if name(t, s, "alice", "two") != "alice-1" || name(t, s, "ALICE", "one") != "alice" {
+	// a taken name with another password is a wrong password, every time
+	refused(t, s, "alice", "two")
+	refused(t, s, "alice", "two")
+	refused(t, s, "ALICE", "three")
+	if name(t, s, "ALICE", "one") != "alice" {
 		t.Fatal("returning player")
 	}
+	noFamily(t, s, "alice")
+	if n, _ := s.Count(); n != 1 {
+		t.Fatalf("%d accounts, want 1", n)
+	}
+	name(t, s, "carol", "three")
 	// only hashes are stored
 	s.Close()
 	matches, _ := filepath.Glob(path + "*")
@@ -60,12 +87,15 @@ func TestFirstLoginCreatesAndSuffixes(t *testing.T) {
 
 func TestNameRules(t *testing.T) {
 	s, _ := open(t)
-	if name(t, s, "abcdefghijklmno", "one") != "abcdefghijk" || name(t, s, "abcdefghijk", "two") != "abcdefghi-1" {
+	if name(t, s, "abcdefghijklmno", "one") != "abcdefghijk" || name(t, s, "abcdefghijk", "one") != "abcdefghijk" {
 		t.Fatal("length")
 	}
-	if name(t, s, "éééééééé", "one") != "ééééé" || name(t, s, "ééééé", "two") != "éééé-1" {
+	refused(t, s, "abcdefghijklmnop", "two")
+	if name(t, s, "éééééééé", "one") != "ééééé" {
 		t.Fatal("multibyte")
 	}
+	refused(t, s, "ééééé", "two")
+	noFamily(t, s, "abcdefghijk", "ééééé")
 	for _, n := range []string{"", "   ", "a b", "a\tb", "a\x01"} {
 		if _, err := s.Login(n, "pw"); err != ErrUsernameMalformed {
 			t.Errorf("Login(%q): %v", n, err)
@@ -115,6 +145,7 @@ func TestPersistenceAndCorruptFile(t *testing.T) {
 	if name(t, s, "alice", "two") != "alice" {
 		t.Fatal("new database")
 	}
+	refused(t, s, "alice", "one")
 	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) == 0 {
 		t.Fatal("not moved aside")
 	}
@@ -206,9 +237,13 @@ func TestConcurrentLogins(t *testing.T) {
 		wg.Add(2)
 		go func(i int) {
 			defer wg.Done()
-			a, _ := s.Login("bob", "pw"+string(rune('0'+i)))
+			a, err := s.Login("bob", "pw"+string(rune('0'+i)))
 			mu.Lock()
-			names = append(names, a.Name)
+			if err == nil {
+				names = append(names, a.Name)
+			} else if err != ErrInvalidPassword {
+				names = append(names, err.Error())
+			}
 			mu.Unlock()
 		}(i)
 		go func() {
@@ -218,18 +253,19 @@ func TestConcurrentLogins(t *testing.T) {
 	}
 	wg.Wait()
 	sort.Strings(names)
-	if strings.Join(names, " ") != "bob bob-1 bob-2 bob-3" {
+	// the first one creates bob, the others are wrong passwords
+	if strings.Join(names, " ") != "bob" {
 		t.Fatalf("names %v", names)
 	}
-	if n, _ := s.Count(); n != 5 {
-		t.Fatalf("%d accounts, want 5 (one carol)", n)
+	if n, _ := s.Count(); n != 2 {
+		t.Fatalf("%d accounts, want 2 (one bob, one carol)", n)
 	}
 }
 
 func TestSessionsFriendsLadderProfile(t *testing.T) {
 	s, _ := open(t)
 	alice, _ := s.Login("alice", "one")
-	second, _ := s.Login("alice", "two")
+	second, _ := s.Login("alice-1", "two")
 	bob, _ := s.Login("bob", "pw")
 	s.BindSession("alice", "10.0.0.3", second)
 	if s.AccountName("ALICE", "10.0.0.3") != "alice-1" || s.AccountName("alice", "10.0.0.9") != "alice" {
@@ -265,9 +301,10 @@ func TestMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name(t, s, "alice", "one") != "alice" || name(t, s, "alice", "two") != "alice-1" {
+	if name(t, s, "alice", "one") != "alice" {
 		t.Fatal("memory")
 	}
+	refused(t, s, "alice", "two")
 	s.Close()
 	s, _ = Open(Memory, t.Logf)
 	defer s.Close()
@@ -308,8 +345,36 @@ func TestLoginWithLimits(t *testing.T) {
 	if err != nil || res.Created {
 		t.Fatal("an existing account needs no creation")
 	}
-	res, _ = s.LoginWith("alice", "other", LoginOptions{})
-	if !res.Created || !res.Taken || res.Account.Name != "alice-1" {
-		t.Fatalf("%+v", res)
+	// a wrong password creates nothing, so it never asks
+	asked := false
+	res, err = s.LoginWith("alice", "other", LoginOptions{AllowCreate: func(int64) error { asked = true; return nil }})
+	if err != ErrInvalidPassword || res.Created || asked {
+		t.Fatalf("%+v %v asked=%v", res, err, asked)
+	}
+}
+
+func TestExistingFamilyAccountsKept(t *testing.T) {
+	// name-k accounts from before wrong passwords were refused (here created under their own names) keep
+	// logging in with the typed name and their password
+	s, _ := open(t)
+	alice, _ := s.Login("alice", "one")
+	first, _ := s.Login("alice-1", "two")
+	second, _ := s.Login("alice-2", "three")
+	if a, err := s.Login("alice", "two"); err != nil || a != first {
+		t.Fatalf("alice-1: %v %v", a, err)
+	}
+	if a, err := s.Login("Alice", "three"); err != nil || a != second {
+		t.Fatalf("alice-2: %v %v", a, err)
+	}
+	if a, err := s.Login("alice", "one"); err != nil || a != alice {
+		t.Fatalf("alice: %v %v", a, err)
+	}
+	// a password of none of them is refused, and alice-3 isn't created
+	refused(t, s, "alice", "four")
+	if a, _ := s.Find("alice-3"); a != nil {
+		t.Fatal("alice-3 created")
+	}
+	if n, _ := s.Count(); n != 3 {
+		t.Fatalf("%d accounts, want 3", n)
 	}
 }

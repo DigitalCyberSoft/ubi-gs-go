@@ -1,9 +1,9 @@
 // Package accounts stores player accounts, login sessions, friends, ladder stats and profile data in
 // SQLite. The schema is the reference implementation's, so an existing ubigs.db keeps working.
 //
-// The first login with a name creates the account. A taken name with a different password gets the next
-// free name of its family (name-1, name-2, ...), so nobody is locked out and nobody can use someone
-// else's account without its password. Passwords are stored as salted scrypt hashes only.
+// The first login with a name creates the account. A login to a taken name with a different password is
+// refused as a wrong password (INVALID_PASSWORD), so nobody can use someone else's account without its
+// password. Passwords are stored as salted scrypt hashes only.
 package accounts
 
 import (
@@ -387,8 +387,10 @@ func getRow(conn *sql.Conn, name string) (*row, error) {
 
 // Login logs in to, or creates, the account for a name and password:
 //  1. the account `name` with this password;
-//  2. else the first of name-1, name-2, ... with this password;
-//  3. else a new account: name if free, else the lowest free name-k.
+//  2. else the first of name-1, name-2, ... with this password (accounts from before wrong passwords
+//     were refused, when a taken name got the next free name of its family);
+//  3. else, if `name` is free, a new account `name`;
+//  4. else ErrInvalidPassword: the name is taken and the password is wrong. No name-k is created.
 //
 // Names are case-insensitive (ASCII) and at most NameSize bytes.
 func (s *Store) Login(name, password string) (Account, error) {
@@ -405,7 +407,7 @@ type LoginOptions struct {
 	Hash func(fn func())
 	// Verifier, if set, makes this a token login (HommaRe's registration): only token accounts match,
 	// and a new account is a token account with this verifier. Without it only plain accounts match.
-	// The two kinds never convert: a name of the other kind is a collision (name-k).
+	// The two kinds never convert: a name of the other kind is a wrong password.
 	Verifier []byte
 }
 
@@ -414,9 +416,6 @@ type LoginResult struct {
 	Account Account
 	// Created is set for a new account.
 	Created bool
-	// Taken is set when the typed name belonged to someone else (the password matched no account of
-	// the name's family), which is also what a password guess looks like.
-	Taken bool
 }
 
 func (o LoginOptions) hash(password string, salt []byte) ([]byte, error) {
@@ -451,8 +450,7 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 	}
 	// the existing accounts of the family, without holding the database
 	candidate := name
-	k := 1
-	for ; ; k++ {
+	for k := 1; ; k++ {
 		r, err := s.lookup(candidate)
 		if err != nil {
 			return fail(err)
@@ -460,23 +458,22 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 		if r == nil {
 			break
 		}
-		if r.token == (opt.Verifier != nil) {
-			hash, err := opt.hash(password, r.salt)
-			if err != nil {
-				return fail(err)
-			}
-			if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
-				if opt.Verifier != nil {
-					if err := s.SetVerifier(Account{r.id, r.name}, opt.Verifier); err != nil {
-						return fail(err)
-					}
+		if ok, err := matches(r, password, opt.Verifier != nil, opt.hash); err != nil {
+			return fail(err)
+		} else if ok {
+			if opt.Verifier != nil {
+				if err := s.SetVerifier(Account{r.id, r.name}, opt.Verifier); err != nil {
+					return fail(err)
 				}
-				return LoginResult{Account: Account{r.id, r.name}}, nil
 			}
+			return LoginResult{Account: Account{r.id, r.name}}, nil
 		}
 		candidate = FamilyName(name, k)
 	}
-	taken := candidate != name
+	if candidate != name {
+		// the name is taken and the password matched none of its family: a wrong password
+		return LoginResult{}, ErrInvalidPassword
+	}
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return fail(err)
@@ -487,27 +484,21 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 	}
 	var res LoginResult
 	err = s.tx(func(conn *sql.Conn) error {
-		// another login may have taken the name meanwhile (or created this very account)
-		for ; ; k++ {
-			r, err := getRow(conn, candidate)
+		// another login may have created the name meanwhile (this very account, or someone else's)
+		r, err := getRow(conn, name)
+		if err != nil {
+			return err
+		}
+		if r != nil {
+			ok, err := matches(r, password, opt.Verifier != nil, nil)
 			if err != nil {
 				return err
 			}
-			if r == nil {
-				break
+			if !ok {
+				return ErrInvalidPassword
 			}
-			if r.token == (opt.Verifier != nil) {
-				hash, err := hashPassword(password, r.salt)
-				if err != nil {
-					return err
-				}
-				if subtle.ConstantTimeCompare(hash, r.hash) == 1 {
-					res = LoginResult{Account: Account{r.id, r.name}}
-					return nil
-				}
-			}
-			candidate = FamilyName(name, k)
-			taken = true
+			res = LoginResult{Account: Account{r.id, r.name}}
+			return nil
 		}
 		if opt.AllowCreate != nil {
 			var stored int64
@@ -519,7 +510,7 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 			}
 		}
 		out, err := conn.ExecContext(context.Background(),
-			"INSERT INTO accounts (name, hash, salt, created) VALUES (?, ?, ?, ?)", candidate, newHash, salt, time.Now().Unix())
+			"INSERT INTO accounts (name, hash, salt, created) VALUES (?, ?, ?, ?)", name, newHash, salt, time.Now().Unix())
 		if err != nil {
 			return err
 		}
@@ -533,13 +524,29 @@ func (s *Store) LoginWith(name, password string, opt LoginOptions) (LoginResult,
 				return err
 			}
 		}
-		res = LoginResult{Account: Account{id, candidate}, Created: true, Taken: taken}
+		res = LoginResult{Account: Account{id, name}, Created: true}
 		return nil
 	})
 	if err != nil {
 		return fail(err)
 	}
 	return res, nil
+}
+
+// matches reports whether the password opens the account: an account of the login's kind (token or
+// plain) with this password's hash. hash runs the hash; nil runs it directly.
+func matches(r *row, password string, token bool, hash func(string, []byte) ([]byte, error)) (bool, error) {
+	if r.token != token {
+		return false, nil
+	}
+	if hash == nil {
+		hash = hashPassword
+	}
+	h, err := hash(password, r.salt)
+	if err != nil {
+		return false, err
+	}
+	return subtle.ConstantTimeCompare(h, r.hash) == 1, nil
 }
 
 func (s *Store) lookup(name string) (*row, error) {

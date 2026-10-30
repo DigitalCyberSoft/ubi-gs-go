@@ -59,10 +59,27 @@ func TestLoginAndNames(t *testing.T) {
 	if res.Header.Type != gsm.GSSUCCESS || res.Data.String() != "[b'f']" {
 		t.Fatalf("login: %s", res)
 	}
-	// a taken name with another password: alice-1, known by the typed name from that address
+	// a taken name with another password: INVALID_PASSWORD (15), the game's "The password is not correct"
+	_, res = login(t, s, "127.0.0.3", "alice", "two")
+	if res.Header.Type != gsm.GSFAIL {
+		t.Fatalf("wrong password: %s", res)
+	}
+	if reason, _ := res.Data.List(1); reason == nil {
+		t.Fatalf("wrong password: %s", res)
+	} else if b, _ := reason.Bin(0); !bytes.Equal(b, []byte{15, 0, 0, 0}) {
+		t.Fatalf("wrong password: %s", res)
+	}
+	if a, _ := s.Accounts().Find("alice-1"); a != nil {
+		t.Fatal("alice-1 created")
+	}
+	// an alice-1 from before (here created under its own name) still logs in with the typed name and its
+	// password, and is known by the typed name from that address
+	if _, err := s.Accounts().Login("alice-1", "two"); err != nil {
+		t.Fatal(err)
+	}
 	_, res = login(t, s, "127.0.0.3", "alice", "two")
 	if res.Header.Type != gsm.GSSUCCESS {
-		t.Fatalf("second login: %s", res)
+		t.Fatalf("alice-1 login: %s", res)
 	}
 	wm := waitModule(t, s, "127.0.0.3", "alice")
 	res, _ = wm.Request(gsm.PLAYERINFO, dl.S("alice"))

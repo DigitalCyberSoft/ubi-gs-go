@@ -172,7 +172,7 @@ func (g *Guard) challenge(ip, name, password string) (accounts.Account, error) {
 	return *found, nil
 }
 
-// miss counts a password miss and sets the back-off. g.mu is held.
+// miss counts a password miss and sets the back-off; the first miss is free (a typo). g.mu is held.
 func (g *Guard) miss(st *ipState) {
 	st.misses++
 	backoff := time.Second << min(st.misses-1, 20)
@@ -220,10 +220,10 @@ func (g *Guard) login(ip, name, password string, verifier []byte) (accounts.Acco
 	defer g.mu.Unlock()
 	st = g.state(ip, g.now())
 	switch {
-	case err != nil:
-	case res.Taken:
-		// the name's own password didn't match: a new player picking a taken name, or a guess
+	case errors.Is(err, accounts.ErrInvalidPassword):
+		// a taken name with another password: a typo, a player picking a taken name, or a guess
 		g.miss(st)
+	case err != nil:
 	default:
 		st.misses = 0
 	}
